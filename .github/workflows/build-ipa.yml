@@ -1,0 +1,108 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "auto = build if nxnative has a profile for the game, otherwise survey; survey = analyse only; build = pack the IPA"
+        type: choice
+        options:
+          - auto
+          - survey
+          - build
+        default: auto
+      title_id:
+        description: "Base game title ID (default: Super Mario Odyssey; Super Mario Bros. Wonder is 010015100B514000)"
+        type: string
+        default: "0100000000010000"
+      nxnative_ref:
+        description: "nxnative branch, tag or commit SHA (pin a SHA for reproducible builds)"
+        type: string
+        default: main
+      runner:
+        description: "Runner label. macos-26 is the standard arm64 Mac; use a larger or self-hosted Mac if the disk is too small"
+        type: string
+        default: macos-26
+      app_name:
+        description: "Home-screen app name (optional)"
+        type: string
+        default: ""
+      release_parts:
+        description: "Also attach the IPA, split into parts under 2 GiB, to a draft release (an IPA of several GB often exceeds the artifact quota)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: write   # only used to create the draft release holding the IPA parts
+    steps:
+      # The IPA embeds your game's files. Artifacts of public repositories can be
+      # downloaded by anyone, so refuse to run anywhere but a private repository.
+      - name: Refuse to run in a public repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          private="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private)"
+          if [ "$private" != "true" ]; then
+            echo "::error::This repository is public. Make it private before running this workflow."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          INPUT_ZIP_URL: ${{ secrets.INPUT_ZIP_URL }}
+          INPUT_ZIP_SHA256: ${{ secrets.INPUT_ZIP_SHA256 }}
+          OUTPUT_PUT_URL: ${{ secrets.OUTPUT_PUT_URL }}
+          NXNATIVE_REF: ${{ inputs.nxnative_ref }}
+          MODE: ${{ inputs.mode }}
+          TITLE_ID: ${{ inputs.title_id }}
+          APP_NAME: ${{ inputs.app_name }}
+          WORK_DIR: ${{ runner.temp }}/smo-work
+          OUT_DIR: ${{ runner.temp }}/smo-out
+        run: bash scripts/cloud_build.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          f="${{ runner.temp }}/smo-out/diagnostics/nxnative-commit.txt"
+          if [ -f "$f" ]; then echo "nxnative commit: \`$(cat "$f")\`" >> "$GITHUB_STEP_SUMMARY"; fi
+          p="${{ runner.temp }}/smo-out/diagnostics/profile-status.txt"
+          if [ -f "$p" ]; then echo "$(cat "$p")" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: ${{ runner.temp }}/smo-out/diagnostics
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Publish IPA parts to a draft release
+        if: always() && inputs.release_parts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish_release_parts.sh "${{ runner.temp }}/smo-out"
+
+      - name: Upload IPA
+        if: always()
+        continue-on-error: true   # a quota failure must not hide the other outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: ${{ runner.temp }}/smo-out/*.ipa
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: ignore

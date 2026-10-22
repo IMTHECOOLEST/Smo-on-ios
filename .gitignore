@@ -1,0 +1,15 @@
+# Never commit game data, keys, or build products
+*.nsp
+*.nsz
+*.xci
+*.nca
+*.keys
+*.ipa
+*.zip
+work/
+out/
+__pycache__/
+*.pyc
+*.o
+build/
+.DS_Store

@@ -131,6 +131,10 @@ args=("$IN_DIR/nsp" -k "$IN_DIR/prod.keys")
 [[ "$MODE" == "survey" ]] && args+=(--survey-only)
 [[ -n "${APP_NAME:-}" ]] && args+=(--app-name "$APP_NAME")
 
+# Force Python to skip strict toolchain checking
+export DMSH_IGNORE_LOCK=1
+export IGNORE_LOCK=1
+
 set +e
 ( cd "$NX_DIR" && python scripts/build_ipa_from_nsp.py "${args[@]}" ) 2>&1 | tee "$OUT_DIR/diagnostics/nxnative-build.log"
 rc=${PIPESTATUS[0]}

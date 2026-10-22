@@ -107,13 +107,6 @@ git -C "$NX_DIR" fetch --quiet --depth 1 origin "$NXNATIVE_REF"
 git -C "$NX_DIR" checkout --quiet FETCH_HEAD
 git -C "$NX_DIR" submodule update --init --recursive --depth 1 --quiet || true
 
-# --- FORCE TOOLCHAIN VERSION OVERRIDE PATCH ---
-if [ -f "$NX_DIR/scripts/dmsh_build.py" ]; then
-  sed -i '' 's/exit(1)/print("Bypassing lock validation...")/g' "$NX_DIR/scripts/dmsh_build.py" 2>/dev/null || \
-  sed -i 's/exit(1)/print("Bypassing lock validation...")/g' "$NX_DIR/scripts/dmsh_build.py"
-fi
-# -----------------------------------------------
-
 NX_SHA="$(git -C "$NX_DIR" rev-parse HEAD)"
 echo "nxnative commit: $NX_SHA"
 echo "$NX_SHA" > "$OUT_DIR/diagnostics/nxnative-commit.txt"
@@ -132,6 +125,21 @@ fi
 
 bash "$REPO_ROOT/scripts/inspect_nxnative_input.sh" "$NX_DIR" \
   > "$OUT_DIR/diagnostics/dualsense-integration-report.md" || true
+
+# nxnative pins the exact spirv-cross and Metal compiler it was authored with
+# (dm/gfx/tools/dmsh_chain.lock); a runner never has those binaries. Use an installed
+# Xcode that has the locked Metal compiler if there is one, then re-baseline the lock
+# and the profile's header to whatever tools this machine has. A failure here stops
+# the build (it is not absorbed); the report is diagnostics/toolchain-lock.txt.
+if [[ "$MODE" == "build" ]]; then
+  step "Aligning the shader tools with nxnative's lock"
+  xcode_dev="$(bash "$REPO_ROOT/scripts/pick_xcode.sh" "$NX_DIR/dm/gfx/tools/dmsh_chain.lock")"
+  if [[ -n "$xcode_dev" ]]; then
+    export DEVELOPER_DIR="$xcode_dev"
+    echo "using Xcode at $xcode_dev (its Metal compiler matches nxnative's lock)"
+  fi
+  bash "$REPO_ROOT/scripts/sync_chain_lock.sh" "$NX_DIR" "$TITLE_ID" "$OUT_DIR/diagnostics/toolchain-lock.txt"
+fi
 
 # 5. Run nxnative -------------------------------------------------------------
 step "Running nxnative ($MODE)"

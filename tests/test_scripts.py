@@ -1,7 +1,9 @@
 """Tests for the input packing/unpacking scripts. Uses tiny synthetic files only."""
 import contextlib
 import io
+import hashlib
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -337,6 +339,424 @@ class HasProfile(unittest.TestCase):
             r = subprocess.run(["bash", str(ROOT / "scripts" / "has_profile.sh"), tmp, "0100000000010000"],
                                capture_output=True, text=True)
             self.assertEqual(r.stdout.strip(), "missing")
+
+
+METAL_NEW = "Apple metal version 32023.921 (metalfe-32023.921.6)"   # what nxnative's lock was made with
+METAL_OLD = "Apple metal version 32023.883 (metalfe-32023.883)"     # what the runner has
+METAL_BUILD_SUFFIX = "Apple metal version 32023.921 (metalfe-32023.921.7)"
+
+
+def metal_text(first_line):
+    # like the real `metal --version`: the version is only the first of several lines
+    return first_line + "\nTarget: air64-apple-darwin25.0.0\nThread model: posix\nInstalledDir: /somewhere\n"
+
+
+class PickXcode(unittest.TestCase):
+    """scripts/pick_xcode.sh with a fake xcrun that reads <developer dir>/metal-<sdk>.txt."""
+
+    FAKE_XCRUN = (
+        "#!/bin/sh\n"
+        'if [ "$1" != "-sdk" ] || [ "$3" != "metal" ] || [ "$4" != "--version" ]; then\n'
+        '  echo "fake xcrun: unsupported: $*" >&2; exit 64\n'
+        "fi\n"
+        'dev="${DEVELOPER_DIR:-$FAKE_DEFAULT_DEV}"\n'
+        'f="$dev/metal-$2.txt"\n'
+        'if [ ! -f "$f" ]; then echo "xcrun: error: unable to find utility \\"metal\\"" >&2; exit 72; fi\n'
+        'cat "$f"\n'
+    )
+    LOCK = f"xlate_source=built\nspirv_cross=d9dc197f061b42a5\nmetal_macosx={METAL_NEW}\nmetal_iphoneos={METAL_NEW}\n"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.bin = self.dir / "bin"
+        self.bin.mkdir()
+        xcrun = self.bin / "xcrun"
+        xcrun.write_text(self.FAKE_XCRUN)
+        xcrun.chmod(0o755)
+        self.search = self.dir / "Applications"
+        self.search.mkdir()
+        self.default_dev = self.dir / "default-dev"
+        self.default_dev.mkdir()
+        self.lock = self.dir / "dmsh_chain.lock"
+        self.lock.write_text(self.LOCK)
+        self.set_metal(self.default_dev, METAL_OLD, METAL_OLD)  # the Xcode in use does not match
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def set_metal(dev, mac, ios):
+        """None means that SDK has no working Metal compiler."""
+        for sdk, line in (("macosx", mac), ("iphoneos", ios)):
+            f = Path(dev) / f"metal-{sdk}.txt"
+            if line is None:
+                if f.exists():
+                    f.unlink()
+            else:
+                f.write_text(metal_text(line))
+
+    def make_xcode(self, name, mac, ios):
+        dev = self.search / name / "Contents" / "Developer"
+        dev.mkdir(parents=True)
+        self.set_metal(dev, mac, ios)
+        return str(dev)
+
+    def pick(self, lock="default", **env):
+        e = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "XCODE_SEARCH_DIR": str(self.search),
+             "FAKE_DEFAULT_DEV": str(self.default_dev), **env}
+        e.pop("DEVELOPER_DIR", None)
+        args = [str(self.lock)] if lock == "default" else ([] if lock is None else [str(lock)])
+        return subprocess.run(["bash", str(ROOT / "scripts" / "pick_xcode.sh"), *args], env=e,
+                              capture_output=True, text=True)
+
+    def assertPicks(self, r, dev):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, dev + "\n")
+
+    def assertNothing(self, r):
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_xcode_in_use_already_matches_prints_nothing(self):
+        self.set_metal(self.default_dev, METAL_NEW, METAL_NEW)
+        self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)  # also matches, but must not be chosen
+        self.assertNothing(self.pick())
+
+    def test_xcode_in_use_with_only_one_sdk_matching_does_not_count(self):
+        self.set_metal(self.default_dev, METAL_NEW, METAL_OLD)
+        dev = self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)
+        self.assertPicks(self.pick(), dev)
+
+    def test_picks_the_first_matching_xcode_and_prints_its_developer_dir(self):
+        self.make_xcode("Xcode_25.app", METAL_OLD, METAL_OLD)
+        first = self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)
+        self.make_xcode("Xcode_26.1.app", METAL_NEW, METAL_NEW)
+        (self.search / "Notes.app").mkdir()  # not an Xcode
+        self.assertPicks(self.pick(), first)
+
+    def test_both_sdks_must_match(self):
+        self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_OLD)   # macosx only
+        self.make_xcode("Xcode_26.1.app", METAL_OLD, METAL_NEW)   # iphoneos only
+        self.assertNothing(self.pick())
+        both = self.make_xcode("Xcode_26.2.app", METAL_NEW, METAL_NEW)
+        self.assertPicks(self.pick(), both)
+
+    def test_xcode_without_a_metal_toolchain_is_skipped(self):
+        self.make_xcode("Xcode_26.0.app", None, None)             # no working Metal compiler at all
+        self.make_xcode("Xcode_26.1.app", METAL_NEW, None)        # no iphoneos Metal compiler
+        self.assertNothing(self.pick())
+        good = self.make_xcode("Xcode_26.2.app", METAL_NEW, METAL_NEW)
+        self.assertPicks(self.pick(), good)
+
+    def test_nothing_matches_prints_nothing(self):
+        self.make_xcode("Xcode_25.app", METAL_OLD, METAL_OLD)
+        self.assertNothing(self.pick())
+
+    def test_comparison_is_exact(self):
+        self.make_xcode("Xcode_26.0.app", METAL_BUILD_SUFFIX, METAL_BUILD_SUFFIX)
+        self.assertNothing(self.pick())
+
+    def test_lock_without_the_metal_lines_prints_nothing(self):
+        self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)
+        for text in ("spirv_cross=d9dc197f061b42a5\n", f"metal_macosx={METAL_NEW}\n",
+                     f"metal_iphoneos={METAL_NEW}\n", "metal_macosx=\nmetal_iphoneos=\n", ""):
+            self.lock.write_text(text)
+            self.assertNothing(self.pick())
+
+    def test_missing_lock_or_argument_prints_nothing(self):
+        self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)
+        self.assertNothing(self.pick(lock=self.dir / "nope.lock"))
+        self.assertNothing(self.pick(lock=None))
+
+    def test_missing_search_dir_prints_nothing(self):
+        self.assertNothing(self.pick(XCODE_SEARCH_DIR=str(self.dir / "does-not-exist")))
+
+    def test_lock_line_styles(self):
+        dev = self.make_xcode("Xcode_26.0.app", METAL_NEW, METAL_NEW)
+        for text in (f"metal_macosx: {METAL_NEW}\nmetal_iphoneos: {METAL_NEW}\n",
+                     f"metal_macosx = {METAL_NEW}\n  metal_iphoneos = {METAL_NEW}  \n",
+                     f"metal_macosx {METAL_NEW}\nmetal_iphoneos {METAL_NEW}\n",
+                     f"metal_macosx={METAL_NEW}\r\nmetal_iphoneos={METAL_NEW}\r\n",
+                     f"metal_macosx_extra=decoy\nmetal_macosx={METAL_NEW}\nmetal_iphoneos={METAL_NEW}"):
+            self.lock.write_text(text)
+            self.assertPicks(self.pick(), dev)
+
+
+STUB_CHAIN = r"""#!/usr/bin/env python3
+# Stand-in for nxnative's dm/gfx/tools/dmsh_chain.py: same CLI, fake tools.
+# FAKE_ACTUAL (file) is "what the runner has"; FAKE_CALLS (file) logs every call.
+import hashlib
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LOCK = os.path.join(HERE, "dmsh_chain.lock")
+GAMES = os.path.join(HERE, "..", "..", "games")
+
+
+def _kv(path):
+    d = {}
+    with open(path) as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.rstrip("\n").split("=", 1)
+                d[k] = v
+    return d
+
+
+def version():
+    with open(LOCK, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:16]
+
+
+def main(argv):
+    game = os.environ.get("DM_GAME")
+    if not game:
+        print("dmsh_chain: set DM_GAME to the base title ID")
+        return 2
+    if not os.path.isdir(os.path.join(GAMES, game)):
+        print("dmsh_chain: no profile " + game)
+        return 2
+    cmd = argv[0] if argv else ""
+    with open(os.environ["FAKE_CALLS"], "a") as log:
+        log.write(cmd + " DM_GAME=" + game + "\n")
+    if cmd == "--check-tools":
+        actual, lock = _kv(os.environ["FAKE_ACTUAL"]), _kv(LOCK)
+        bad = [k for k in lock if lock[k] != actual.get(k)]
+        for k in bad:
+            print("[RED] translation chain tools do not match the lock file: %s: lock %s / actual %s"
+                  % (k, lock[k], actual.get(k)))
+        if not bad:
+            print("tools match the lock file")
+        return 1 if bad else 0
+    if cmd == "--update-lock":
+        if os.environ.get("FAKE_REFUSE"):
+            print("[RED] the translator was not built from source: refusing to write the lock")
+            return 1
+        if not os.environ.get("FAKE_NOOP_UPDATE"):
+            with open(os.environ["FAKE_ACTUAL"]) as src, open(LOCK, "w") as dst:
+                dst.write(src.read())
+        print("lock updated")
+        return 0
+    if cmd == "--header":
+        if os.environ.get("FAKE_FAIL_HEADER"):
+            print("[RED] cannot write the header")
+            return 1
+        with open(os.path.join(GAMES, game, "dmsh_chain.h"), "w") as f:
+            f.write('#define DMSH_CHAIN_VERSION "%s"\n' % version())
+        print("header written")
+        return 0
+    print("usage: dmsh_chain.py --check-tools | --update-lock | --header")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+"""
+
+LOCK_AUTHOR = (f"xlate_source=built-from-source\nspirv_cross=d9dc197f061b42a5\n"
+               f"metal_macosx={METAL_NEW}\nmetal_iphoneos={METAL_NEW}\n")
+LOCK_RUNNER = (f"xlate_source=built-from-source\nspirv_cross=242d2c694be3ec91\n"
+               f"metal_macosx={METAL_OLD}\nmetal_iphoneos={METAL_OLD}\n")
+SMO = "0100000000010000"
+
+
+class SyncChainLock(unittest.TestCase):
+    """scripts/sync_chain_lock.sh against a fake nxnative tree and a stub dmsh_chain.py."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.nx = self.dir / "nx"
+        self.tools = self.nx / "dm" / "gfx" / "tools"
+        self.calls = self.dir / "calls.log"
+        self.actual = self.dir / "actual.txt"
+        self.report = self.dir / "diag" / "toolchain-lock.txt"  # its folder does not exist yet
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fresh(self):
+        """Start over with an empty scratch dir (for loops over several fake trees in one test)."""
+        self.tearDown()
+        self.setUp()
+
+    def tree(self, profiles=(SMO,), chain=True, lock=LOCK_AUTHOR, actual=LOCK_RUNNER, games=True):
+        """profiles: names (with a game.tsv) or (name, False) for a folder without game.tsv."""
+        self.tools.mkdir(parents=True)
+        if chain:
+            (self.tools / "dmsh_chain.py").write_text(STUB_CHAIN)
+        if lock is not None:
+            (self.tools / "dmsh_chain.lock").write_text(lock)
+        self.actual.write_text(actual)
+        if games:
+            (self.nx / "dm" / "games").mkdir(parents=True)
+        for prof in profiles:
+            name, has_tsv = (prof, True) if isinstance(prof, str) else prof
+            d = self.nx / "dm" / "games" / name
+            d.mkdir(parents=True)
+            if has_tsv:
+                (d / "game.tsv").write_text("title\t" + name + "\n")
+            (d / "dmsh_chain.h").write_text('#define DMSH_CHAIN_VERSION "stale-%s"\n' % name)
+
+    def sync(self, title=SMO, nx=None, **env):
+        e = {**os.environ, "FAKE_ACTUAL": str(self.actual), "FAKE_CALLS": str(self.calls), **env}
+        return subprocess.run(["bash", str(ROOT / "scripts" / "sync_chain_lock.sh"), str(nx or self.nx), title,
+                               str(self.report)], env=e, capture_output=True, text=True)
+
+    def called(self):
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def flags(self):
+        return [c.split()[0] for c in self.called()]
+
+    def lock_text(self):
+        return (self.tools / "dmsh_chain.lock").read_text()
+
+    def header(self, name):
+        return (self.nx / "dm" / "games" / name / "dmsh_chain.h").read_text()
+
+    @staticmethod
+    def version_of(text):
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+    def test_match_changes_nothing(self):
+        self.tree(lock=LOCK_RUNNER)
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.report.read_text().startswith("match:"))
+        self.assertEqual(self.flags(), ["--check-tools"])
+        self.assertEqual(self.lock_text(), LOCK_RUNNER)
+        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
+
+    def test_mismatch_rewrites_lock_and_header_of_the_target_profile_only(self):
+        other = "010015100B514000"
+        self.tree(profiles=(other, SMO))
+        before_other = [(self.nx / "dm" / "games" / other / n).read_bytes() for n in ("game.tsv", "dmsh_chain.h")]
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
+        self.assertTrue(all(c.endswith("DM_GAME=" + SMO) for c in self.called()))
+        self.assertEqual(self.lock_text(), LOCK_RUNNER)
+        new_version = self.version_of(LOCK_RUNNER)
+        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "%s"\n' % new_version)
+        after_other = [(self.nx / "dm" / "games" / other / n).read_bytes() for n in ("game.tsv", "dmsh_chain.h")]
+        self.assertEqual(before_other, after_other)
+        rep = self.report.read_text()
+        self.assertTrue(rep.startswith("re-baselined:"), rep)
+        self.assertIn("what differed:", rep)
+        self.assertIn("spirv_cross: lock d9dc197f061b42a5 / actual 242d2c694be3ec91", rep)
+        self.assertIn("lock before:\n" + LOCK_AUTHOR.rstrip("\n"), rep)
+        self.assertIn("lock after:\n" + LOCK_RUNNER.rstrip("\n"), rep)
+        self.assertIn("chain version: " + new_version, rep)
+
+    def test_title_id_matches_case_insensitively(self):
+        folder = "0100ABCDEF000000"
+        self.tree(profiles=("0100000000010000", folder))   # the first profile sorts before the match
+        r = self.sync(title="0100abcdef000000")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
+        self.assertTrue(all(c.endswith("DM_GAME=" + folder) for c in self.called()), self.called())
+        self.assertEqual(self.header(folder), '#define DMSH_CHAIN_VERSION "%s"\n' % self.version_of(LOCK_RUNNER))
+        self.assertEqual(self.header("0100000000010000"), '#define DMSH_CHAIN_VERSION "stale-0100000000010000"\n')
+
+    def test_no_matching_profile_rewrites_the_lock_but_writes_no_header(self):
+        other = "010015100B514000"
+        self.tree(profiles=(other,))
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--check-tools"])
+        self.assertTrue(all(c.endswith("DM_GAME=" + other) for c in self.called()))
+        self.assertEqual(self.lock_text(), LOCK_RUNNER)
+        self.assertEqual(self.header(other), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % other)
+        rep = self.report.read_text()
+        self.assertTrue(rep.startswith("re-baselined:"), rep)
+        self.assertIn("no header", rep.splitlines()[0])
+
+    def test_translator_refusal_fails_loudly_and_leaves_the_lock_alone(self):
+        self.tree()
+        r = self.sync(FAKE_REFUSE="1")
+        self.assertEqual(r.returncode, 1)
+        rep = self.report.read_text()
+        self.assertTrue(rep.startswith("failed:"), rep)
+        self.assertIn("not built from source", rep)
+        self.assertIn("not built from source", r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock"])
+        self.assertEqual(self.lock_text(), LOCK_AUTHOR)
+        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
+
+    def test_still_mismatching_after_update_fails(self):
+        self.tree()
+        r = self.sync(FAKE_NOOP_UPDATE="1")
+        self.assertEqual(r.returncode, 1)
+        rep = self.report.read_text()
+        self.assertTrue(rep.startswith("failed:"), rep)
+        self.assertIn("still do not match", rep.splitlines()[0])
+        self.assertIn("still do not match", r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
+
+    def test_header_failure_fails(self):
+        self.tree()
+        r = self.sync(FAKE_FAIL_HEADER="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.report.read_text().startswith("failed:"))
+        self.assertIn("cannot write the header", r.stderr)
+
+    def test_no_lock_mechanism_is_skipped(self):
+        for kw in ({"chain": False}, {"lock": None}, {"chain": False, "lock": None}):
+            with self.subTest(**kw):
+                self.fresh()
+                self.tree(**kw)
+                r = self.sync()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(self.report.read_text().startswith("skipped:"))
+                self.assertEqual(self.called(), [])
+        self.fresh()
+        r = self.sync(nx=self.dir / "no-such-checkout")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.report.read_text().startswith("skipped:"))
+
+    def test_no_profiles_is_skipped(self):
+        for kw in ({"profiles": ()}, {"profiles": (("0100000000010000", False),)}, {"profiles": (), "games": False}):
+            with self.subTest(**kw):
+                self.fresh()
+                self.tree(**kw)
+                r = self.sync()
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertTrue(self.report.read_text().startswith("skipped:"))
+                self.assertEqual(self.called(), [])
+                self.assertEqual(self.lock_text(), LOCK_AUTHOR)
+
+    def test_a_profile_without_game_tsv_is_not_used(self):
+        self.tree(profiles=((SMO, False), "010015100B514000"))   # same ID but no game.tsv
+        r = self.sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--check-tools"])  # no header
+        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
+
+
+class CloudBuildToolLock(unittest.TestCase):
+    text = (ROOT / "scripts" / "cloud_build.sh").read_text()
+
+    def test_no_sed_patch_of_nxnative(self):
+        self.assertNotIn("sed -i", self.text)
+        self.assertNotIn("FORCE TOOLCHAIN VERSION OVERRIDE", self.text)
+        self.assertNotIn("Bypassing lock validation", self.text)
+
+    def test_calls_both_scripts_with_bash_in_build_mode_before_nxnative_runs(self):
+        pick = re.search(r'xcode_dev="\$\(bash "\$REPO_ROOT/scripts/pick_xcode\.sh" "\$NX_DIR/dm/gfx/tools/dmsh_chain\.lock"\)"',
+                         self.text)
+        sync = re.search(r'^\s*bash "\$REPO_ROOT/scripts/sync_chain_lock\.sh" "\$NX_DIR" "\$TITLE_ID" '
+                         r'"\$OUT_DIR/diagnostics/toolchain-lock\.txt"$', self.text, re.M)
+        self.assertTrue(pick, "pick_xcode.sh is not called with bash")
+        self.assertTrue(sync, "sync_chain_lock.sh is not called with bash")
+        self.assertIn('export DEVELOPER_DIR="$xcode_dev"', self.text)
+        run_nxnative = self.text.index("build_ipa_from_nsp.py")
+        self.assertLess(pick.start(), sync.start())
+        self.assertLess(sync.start(), run_nxnative)
+        # only when MODE=build: the closest `if` above the call is the MODE check
+        self.assertTrue(self.text[:pick.start()].rsplit("\nif ", 1)[1].startswith('[[ "$MODE" == "build" ]]'))
 
 
 if __name__ == "__main__":

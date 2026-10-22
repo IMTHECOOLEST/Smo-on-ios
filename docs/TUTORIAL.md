@@ -143,6 +143,7 @@ nxnative's README advises signing with the **Increased Memory Limit** capability
 | `ipa` artifact upload failed | Quota. Use the draft release parts (B6). |
 | No draft release | `release_parts` was off, or no IPA was produced. Check `diagnostics/nxnative-build.log`. |
 | Build fails inside nxnative | Open `diagnostics/nxnative-build.log`. Check nxnative's issues page before filing anything, and never post keys. |
+| Run summary says `shader tool lock, failed: ...`, or the shader stage said `translation chain tools do not match the lock file` | The runner's spirv-cross and Metal compiler differ from the ones pinned in nxnative's `dmsh_chain.lock`. The build now picks an installed Xcode with the locked Metal compiler if there is one, and otherwise re-baselines the lock and the profile's header to the runner's tools (`re-baselined:`). `failed:` means that was not possible, for example because nxnative's translator was not built from source; read `diagnostics/toolchain-lock.txt` and check nxnative's issues page. |
 
 ## Checking support for another game
 

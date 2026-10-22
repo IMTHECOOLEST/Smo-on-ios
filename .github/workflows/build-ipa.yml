@@ -80,6 +80,8 @@ jobs:
           if [ -f "$f" ]; then echo "nxnative commit: \`$(cat "$f")\`" >> "$GITHUB_STEP_SUMMARY"; fi
           p="${{ runner.temp }}/smo-out/diagnostics/profile-status.txt"
           if [ -f "$p" ]; then echo "$(cat "$p")" >> "$GITHUB_STEP_SUMMARY"; fi
+          t="${{ runner.temp }}/smo-out/diagnostics/toolchain-lock.txt"
+          if [ -f "$t" ]; then echo "shader tool lock, $(head -n 1 "$t")" >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Upload diagnostics
         if: always()

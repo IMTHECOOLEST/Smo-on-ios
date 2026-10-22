@@ -30,6 +30,7 @@ Full walkthrough: **[docs/TUTORIAL.md](docs/TUTORIAL.md)** (prepare the files, b
 - **Cost and quota:** private repos bill macOS minutes at a multiplier. The IPA is about 6 GB, which usually exceeds a personal plan's artifact storage, so the workflow also attaches it to a draft release in parts under 2 GiB (`release_parts`, on by default). The artifact upload is allowed to fail.
 - **Other Macs:** `scripts/cloud_build.sh` runs on any Mac (EC2 Mac, MacStadium). Set `INPUT_ZIP_PATH` instead of `INPUT_ZIP_URL`.
 - `nxnative_ref` defaults to `main`; pin a commit SHA for reproducible builds. The resolved commit is shown in the run summary.
+- **Shader tool lock:** nxnative pins the exact spirv-cross build and Metal compiler it was authored with (`dm/gfx/tools/dmsh_chain.lock`), and a runner never has those exact binaries, so its shader stage stops with `translation chain tools do not match the lock file`. Before the build, `scripts/pick_xcode.sh` selects an installed Xcode whose Metal compiler matches the lock, if there is one, and `scripts/sync_chain_lock.sh` re-baselines the lock and the game profile's `dmsh_chain.h` to the tools the runner has. The rewriting is done by nxnative's own `dmsh_chain.py` in the runner's checkout; no nxnative code is patched. The first line of `diagnostics/toolchain-lock.txt` (also in the run summary) says `match`, `re-baselined` or `failed`; a re-baselined build translates shaders with tools nxnative was not pinned to, so keep that in mind if the game renders wrongly.
 
 ## What gets uploaded
 

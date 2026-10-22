@@ -20,8 +20,8 @@
 set -euo pipefail
 set +x
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd)"
-NXNATIVE_URL="${NXNATIVE_URL:-https://github.com}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NXNATIVE_URL="${NXNATIVE_URL:-https://github.com/seedds/nxnative.git}"
 NXNATIVE_REF="${NXNATIVE_REF:-main}"
 MODE="${MODE:-auto}"
 TITLE_ID="${TITLE_ID:-0100000000010000}"

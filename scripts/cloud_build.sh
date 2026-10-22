@@ -21,7 +21,7 @@ set -euo pipefail
 set +x
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NXNATIVE_URL="${NXNATIVE_URL:-https://github.com/seedds/nxnative.git}"
+NXNATIVE_URL="${NXNATIVE_URL:-https://github.com}"
 NXNATIVE_REF="${NXNATIVE_REF:-main}"
 MODE="${MODE:-auto}"
 TITLE_ID="${TITLE_ID:-0100000000010000}"
@@ -106,12 +106,14 @@ git -C "$NX_DIR" remote add origin "$NXNATIVE_URL"
 git -C "$NX_DIR" fetch --quiet --depth 1 origin "$NXNATIVE_REF"
 git -C "$NX_DIR" checkout --quiet FETCH_HEAD
 git -C "$NX_DIR" submodule update --init --recursive --depth 1 --quiet || true
+
 # --- FORCE TOOLCHAIN VERSION OVERRIDE PATCH ---
-if [ -f "$SNX_DIR/scripts/dmsh_build.py" ]; then
-  sed -i '' 's/exit(1)/print("Bypassing lock validation...")/g' "$SNX_DIR/scripts/dmsh_build.py" 2>/dev/null || \
-  sed -i 's/exit(1)/print("Bypassing lock validation...")/g' "$SNX_DIR/scripts/dmsh_build.py"
+if [ -f "$NX_DIR/scripts/dmsh_build.py" ]; then
+  sed -i '' 's/exit(1)/print("Bypassing lock validation...")/g' "$NX_DIR/scripts/dmsh_build.py" 2>/dev/null || \
+  sed -i 's/exit(1)/print("Bypassing lock validation...")/g' "$NX_DIR/scripts/dmsh_build.py"
 fi
 # -----------------------------------------------
+
 NX_SHA="$(git -C "$NX_DIR" rev-parse HEAD)"
 echo "nxnative commit: $NX_SHA"
 echo "$NX_SHA" > "$OUT_DIR/diagnostics/nxnative-commit.txt"
@@ -137,10 +139,6 @@ args=("$IN_DIR/nsp" -k "$IN_DIR/prod.keys")
 [[ "$MODE" == "survey" ]] && args+=(--survey-only)
 [[ -n "${APP_NAME:-}" ]] && args+=(--app-name "$APP_NAME")
 
-# Force Python to skip strict toolchain checking
-export DMSH_IGNORE_LOCK=1
-export IGNORE_LOCK=1
-
 set +e
 ( cd "$NX_DIR" && python scripts/build_ipa_from_nsp.py "${args[@]}" ) 2>&1 | tee "$OUT_DIR/diagnostics/nxnative-build.log"
 rc=${PIPESTATUS[0]}
@@ -164,7 +162,7 @@ while IFS= read -r -d '' ipa; do
   cp "$ipa" "$OUT_DIR/"
   ipa_count=$((ipa_count + 1))
   echo "IPA: $(basename "$ipa") ($(du -h "$ipa" | cut -f1))"
-done < <(find "$IN_DIR/nsp" -maxdepth 1 -name '*.ipa' -type f -print0)
+done < <(find "$WORK_DIR" -name '*.ipa' -type f -print0)
 
 if [[ $rc -ne 0 ]]; then
   echo "nxnative exited with status $rc; see diagnostics/nxnative-build.log" >&2

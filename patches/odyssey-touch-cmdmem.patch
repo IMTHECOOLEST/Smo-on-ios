@@ -1,7 +1,7 @@
 diff -ruN a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
---- a/dm/gfx/nvn/hle_nvn.c	2026-10-24 14:34:51.656964067 +0100
-+++ b/dm/gfx/nvn/hle_nvn.c	2026-10-24 14:41:19.129203112 +0100
-@@ -716,42 +716,81 @@
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -716,42 +716,106 @@
  // (when it re-records that material in place; packing the next recording right behind by used never touches them, since used includes the JUMP). So a segment remembers that guest range and is reclaimed when the game gives out memory
  // overlapping it; segments overflowing from a host segment keep the same range.
  // The segment pool grows on demand (SMBW opening course: many small command buffers each overflow once per frame, and the old fixed 64 segments × 1 MB ran out within 8 frames); abort only beyond HOSTSEG_CAP in total.
@@ -16,6 +16,7 @@ diff -ruN a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
 +#define HOSTSEG_SLAB (8u << 20)
 +#define HOSTSEG_CAP_MB 1024                          // in total (DM_NVN_HOSTSEG_MB in env.txt sets it, 256 to 4096)
 +#define HOSTSEG_CAP_MAX ((size_t)4096 << 20)
++#define HOSTSEG_KEEP_FRAMES 30                       // at the cap, a segment taken within this many frames is never reclaimed by age (the GPU may still read it)
  uint64_t dm_nvn_frame_count(void);
 -typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; } hostseg_t;   // org: the guest range of the recording it hangs off (0 = unknown, never reclaimed)
 +typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; uint32_t sz; int bpos; } hostseg_t;   // org: the guest range of the recording it hangs off (0 = unknown, never reclaimed); bpos: place in g_busy
@@ -30,6 +31,25 @@ diff -ruN a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
 -static uint8_t *hostseg_take(const cmd_t *o) {
 -    static unsigned total; uint64_t f = dm_nvn_frame_count(); uint8_t *m = NULL;
 +static void ipush(int **a, int *n, int *cap, int v) { if (*n == *cap) { *cap = *cap ? *cap * 2 : 256; *a = realloc(*a, sizeof **a * (size_t)*cap); } (*a)[(*n)++] = v; }
++// At the cap, instead of aborting: free the segments held longest. A game that never gives a recording's range back (Odyssey's Wooden Kingdom: segments of recordings with no known origin,
++// about 65 a frame) pins them for good, and they are dead in practice long before the cap; the oldest quarter by age goes (none that is younger than HOSTSEG_KEEP_FRAMES), so a recording
++// that was only just made is safe. Caller holds g_hostseg_mu. Returns how many were freed; *agep: the age they all had at least, *unkp: how many busy segments had no known origin.
++static uint32_t hostseg_reclaim_old(uint64_t f, uint64_t *agep, uint32_t *unkp) {
++    uint64_t oldest = f; uint32_t n = 0; *unkp = 0;
++    for (int j = 0; j < g_nbusy; j++) { const hostseg_t *h = &g_hostseg[g_busy[j]]; if (h->frame < oldest) oldest = h->frame; if (!h->org_hi) (*unkp)++; }
++    uint64_t span = f - oldest, age = span - span / 4;
++    if (age < HOSTSEG_KEEP_FRAMES) age = HOSTSEG_KEEP_FRAMES;
++    *agep = age;
++    for (int j = 0; j < g_nbusy; ) {
++        int idx = g_busy[j]; hostseg_t *h = &g_hostseg[idx];
++        if (f >= h->frame && f - h->frame >= age) {
++            h->busy = 0; h->bpos = -1;
++            g_busy[j] = g_busy[--g_nbusy]; if (j < g_nbusy) g_hostseg[g_busy[j]].bpos = j;
++            int c = h->sz > HOSTSEG_SMALL; ipush(&g_free[c], &g_nfree[c], &g_capfree[c], idx); n++;
++        } else j++;
++    }
++    return n;
++}
 +// Take a segment: origin = the current recording's guest bytes [BEGIN, end of JUMP); if the write pointer is already in a host segment (overflowing again), keep that segment's origin.
 +// need = bytes the next record needs, 0 = unknown; returns the segment and its size in *szp
 +static uint8_t *hostseg_take(const cmd_t *o, uint32_t need, size_t *szp) {
@@ -64,19 +84,24 @@ diff -ruN a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
 +            for (int k = cnt - 1; k >= 1; k--) ipush(&g_free[cls], &g_nfree[cls], &g_capfree[cls], first + k);
 +            idx = first;
 +        }
-     }
--    unsigned t = ++total; int n = g_nhostseg;
++    }
 +    if (idx < 0 && cls == 0 && g_nfree[1] > 0) idx = g_free[1][--g_nfree[1]];   // no small segment and no room for a slab of them: a big one serves too
++    uint32_t nrec = 0, rec_unk = 0; uint64_t rec_age = 0;
++    if (idx < 0 && (nrec = hostseg_reclaim_old(f, &rec_age, &rec_unk)) > 0)   // the cap is reached: free the segments held longest rather than abort (see hostseg_reclaim_old)
++        idx = g_nfree[cls] > 0 ? g_free[cls][--g_nfree[cls]] : cls == 0 && g_nfree[1] > 0 ? g_free[1][--g_nfree[1]] : -1;
 +    if (idx >= 0) {
 +        hostseg_t *h = &g_hostseg[idx]; h->frame = f; h->busy = 1; h->org_lo = lo; h->org_hi = hi; h->bpos = g_nbusy;
 +        ipush(&g_busy, &g_nbusy, &g_capbusy, idx); m = h->mem; sz = h->sz;
-+    }
+     }
+-    unsigned t = ++total; int n = g_nhostseg;
 +    unsigned t = ++total; nbusy = (uint32_t)g_nbusy; nseg = (uint32_t)g_nhostseg; mb = g_slab_bytes >> 20; size_t cap_mb = g_slab_cap >> 20;
++    uint32_t nunk = 0; if (t == 1 || t % 1024 == 0) for (int j = 0; j < g_nbusy; j++) if (!g_hostseg[g_busy[j]].org_hi) nunk++;   // busy segments whose recording's range is unknown: never reclaimed by the game's blocks
      pthread_mutex_unlock(&g_hostseg_mu);
 -    if (!m) die("NVN command memory: the game's pool is empty and host-lent segments reached %u MB without being reclaimed by the game's blocks", HOSTSEG_CAP >> 20);
 -    if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %d segments × %u KB)", t, (unsigned long long)f, n, HOSTSEG_SZ >> 10);
 +    if (!m) die("NVN command memory: the game's pool is empty and host-lent segments reached %u MB without being reclaimed by the game's blocks (%u of %u segments in use, a record needed %u bytes; DM_NVN_HOSTSEG_MB in env.txt raises the limit)", (unsigned)(cap_mb), nbusy, nseg, need);
-+    if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %u segments, %zu MB, %u in use)", t, (unsigned long long)f, nseg, mb, nbusy);
++    if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %u segments, %zu MB, %u in use, %u of them with no known origin)", t, (unsigned long long)f, nseg, mb, nbusy, nunk);
++    if (nrec) { static unsigned nrl; if (++nrl <= 8 || nrl % 64 == 0) LOG("[nvn] [RED] host-lent command memory is at its limit (%zu MB): freed the %u segments held longest (taken %llu or more frames ago) instead of aborting; the game never handed their ranges back (%u of the %u busy segments had no known origin). If rendering breaks after this, tell the developers", cap_mb, nrec, (unsigned long long)rec_age, rec_unk, nbusy + nrec - 1); }
 +    *szp = sz;
      return m;
  }
@@ -101,7 +126,7 @@ diff -ruN a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
      if (!pl->mem) { LOG("[RED] AddCommandMemory: pool has no CPU storage"); return; }
      hostseg_release((uintptr_t)(pl->mem + off), (uintptr_t)(pl->mem + off + n));
      if (cs_on()) { pthread_mutex_lock(&g_cs_mu); g_cs.grants++; g_cs.grant_bytes += n; if (!g_cs.grant_min || n < g_cs.grant_min) g_cs.grant_min = n; if (n > g_cs.grant_max) g_cs.grant_max = n; pthread_mutex_unlock(&g_cs_mu); }
-@@ -767,12 +806,14 @@
+@@ -767,12 +831,14 @@
          // The game's callback cannot supply enough (newer-SDK games hand out small chunks sized for real-device commands, or disable the callback and manage memory themselves): continue recording in a host segment instead of aborting
          if (!o->cb || tries == 2) {
              static int once; if (!once++) LOG("[nvn] command memory: the game's callback did not add enough (cb=%p, need %u bytes), using a host-lent segment", (void *)o->cb, size + OP_RESERVE);
@@ -130,7 +155,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  //     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
  //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
 +//   OD (Odyssey, after Super Mario Odyssey's touch layout; the first layout of that game): one drawn ring (the left stick, in the left edge's middle), a big JUMP (B) key bottom right
-+//     with a CAP (Y) key above it, a big CROUCH (ZL) key bottom left under the left stick, + at the top right and − beside the layout button. No D-pad, shoulders or A / X: the other two layouts have them. There is no right stick: the camera is turned by swiping;
++//     with a CAP (Y) key above it, a CROUCH (ZL) key above that (half way between + and CAP), + at the top right and − beside the layout button. No D-pad, shoulders or A / X: the other two layouts have them. There is no right stick: the camera is turned by swiping;
 +//     any touch landing on no control (outside the floating left stick's area) is a camera swipe: it drives the right stick by how fast the finger moves, and the deflection fades within a fraction of a second once the finger slows or stops. The vertical places of the sticks and the cap key are fractions of the safe height, so the layout fits a
 +//     1.43:1 screen (an iPad, whose game view is 1.43:1 with the picture centred in it, front_ios.m) as well as a phone: the keys stay where the thumbs rest, on the black bars and the picture's edges.
  //   Touch-down ownership: locked keys first (shoulders, − / +, the layout button, L3 / R3), then whichever of the diamond, the D-pad and the left stick has the smallest distance / grab radius (the left stick's grab circle borders the D-pad),
@@ -143,8 +168,8 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
 +static const CGFloat
 +    K_OD_STICK_X = 90, K_OD_STICK_Y = 0.50, K_OD_STICK_R = 66,   // OD: left stick centre from the left edge (u) and from the top (fraction of the safe height), ring radius (also the camera swipe's largest deflection)
 +    K_OD_CAM_GAIN = 2.0, K_OD_CAM_TAU = 0.08,                    // OD: camera swipe: deflection (points) per point of finger travel (a swipe of v points / s settles near gain · v · tau), and the time (s) the deflection takes to fade once the finger slows or stops
-+    K_OD_BTN_X = 66, K_OD_BTN_R = 38, K_OD_BOT = 60,             // OD: jump / crouch key centre from the outer edge, key radius, centre from the bottom (u)
-+    K_OD_CAP_Y = 0.60,                                           // OD: cap key centre from the top (fraction of the safe height); kept clear of + and of the jump key
++    K_OD_BTN_X = 66, K_OD_BTN_R = 38, K_OD_BOT = 60,             // OD: jump / cap / crouch key centre from the right edge, key radius, jump key centre from the bottom (u)
++    K_OD_CAP_Y = 0.60,                                           // OD: cap key centre from the top (fraction of the safe height); kept clear of + (with room for the crouch key above it) and of the jump key
 +    K_OD_PLUS_Y = 40, K_OD_PLUS_R = 24;                          // OD: + key centre from the top (u), radius
 +static BOOL odHidden(int b) { return b == B_A || b == B_X || b == B_L || b == B_R || b == B_ZR; }   // keys the OD layout does not have
  static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
@@ -228,22 +253,26 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      [self applyLayout]; [self setNeedsLayout];
  }
  
-@@ -204,14 +241,30 @@
+@@ -204,14 +241,34 @@
  - (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
  - (CGFloat)u { return dm_pad_unit(self.bounds.size); }   // 1 = an iPhone Pro Max in landscape; grows with bigger screens (dm_pad_unit)
  static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
 +static CGFloat clampf(CGFloat v, CGFloat lo, CGFloat hi) { return hi < lo ? lo : MIN(MAX(v, lo), hi); }
 +- (CGPoint)odJumpCenter { CGRect s = self.corner; return side(s, 1, K_OD_BTN_X * self.u, CGRectGetMaxY(s) - K_OD_BOT * self.u); }
-+- (CGPoint)odCrouchCenter { CGRect s = self.corner; return side(s, 0, K_OD_BTN_X * self.u, CGRectGetMaxY(s) - K_OD_BOT * self.u); }
 +- (CGPoint)odPlusCenter { CGRect s = self.safe; return side(s, 1, K_OD_BTN_X * self.u, CGRectGetMinY(s) + K_OD_PLUS_Y * self.u); }
 +- (CGPoint)odCapCenter {   // a fraction of the height down the right edge, between + and the jump key (the screen is 1.43:1 on an iPad, wider on a phone)
 +    CGRect s = self.safe; CGFloat u = self.u, r = K_OD_BTN_R * u, jump = [self odJumpCenter].y, plus = [self odPlusCenter].y + K_OD_PLUS_R * u;
-+    CGFloat y = clampf(CGRectGetMinY(s) + K_OD_CAP_Y * s.size.height, plus + r + 8 * u, jump - 2 * r - 8 * u);
++    CGFloat y = clampf(CGRectGetMinY(s) + K_OD_CAP_Y * s.size.height, plus + 3 * r + 16 * u, jump - 2 * r - 8 * u);
 +    return side(s, 1, K_OD_BTN_X * u, y);
 +}
-+- (CGPoint)odStickHome {   // the left ring: left edge, half way down, kept clear of the crouch key under it
++- (CGPoint)odCrouchCenter {   // the right edge, half way between the + key and the cap key (clamped clear of both)
++    CGRect s = self.safe; CGFloat u = self.u, r = K_OD_BTN_R * u, plus = [self odPlusCenter].y, cap = [self odCapCenter].y;
++    CGFloat y = clampf((plus + cap) / 2, plus + K_OD_PLUS_R * u + r + 8 * u, cap - 2 * r - 8 * u);
++    return side(s, 1, K_OD_BTN_X * u, y);
++}
++- (CGPoint)odStickHome {   // the left ring: left edge, half way down
 +    CGRect s = self.safe; CGFloat u = self.u, R = K_OD_STICK_R * u;
-+    CGFloat y = clampf(CGRectGetMinY(s) + K_OD_STICK_Y * s.size.height, CGRectGetMinY(s) + R + 4 * u, [self odCrouchCenter].y - K_OD_BTN_R * u - R - 8 * u);
++    CGFloat y = clampf(CGRectGetMinY(s) + K_OD_STICK_Y * s.size.height, CGRectGetMinY(s) + R + 4 * u, CGRectGetMaxY(s) - R - 4 * u);
 +    return side(self.corner, 0, K_OD_STICK_X * u, y);
 +}
  - (CGPoint)faceCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 1, K_FACE_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
@@ -263,11 +292,11 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  - (BOOL)inLeftArea:(CGPoint)p { return p.x <= self.bounds.size.width * K_LSWIPE; }
  - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
  - (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u); }
-@@ -219,10 +272,12 @@
+@@ -219,10 +276,12 @@
  static BOOL isDrop(int b) { return b == B_ZL || b == B_L || b == B_ZR || b == B_R; }
  static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
  - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
-+    if (_od && b == B_ZL) return [self odCrouchCenter];   // OD: ZL is the round crouch key, bottom left
++    if (_od && b == B_ZL) return [self odCrouchCenter];   // OD: ZL is the round crouch key, right edge above the cap key
      return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
 -- (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
 +- (CGFloat)dropR:(int)b { if (_od && b == B_ZL) return K_OD_BTN_R * self.u; return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
@@ -277,7 +306,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − on the left, + on the right
      return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
  - (CGPoint)swapCenter { CGRect s = self.safe; return CGPointMake(CGRectGetMidX(s), CGRectGetMinY(s) + K_PILL_Y * self.u); }
-@@ -231,7 +286,7 @@
+@@ -231,7 +290,7 @@
  - (int)btnAt:(CGPoint)p {   // locked keys (tested on touch-down only, then locked)
      CGFloat u = self.u;
      for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
@@ -286,7 +315,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
          BOOL hit = isDrop(b) ? dist(p, [self dropCenter:b]) <= [self dropR:b] * 1.35
                   : isClick(b) ? dist(p, [self clickCenter:b]) <= K_CLICK_R * u * 1.35
                   : CGRectContainsPoint(CGRectInset([self pillRect:b], -8 * u, -8 * u), p);
-@@ -241,9 +296,14 @@
+@@ -241,9 +300,14 @@
  - (BOOL)inSwap:(CGPoint)p { return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6; }
  - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
      uint64_t m = 0; CGFloat r = self.faceR * 1.25;
@@ -302,7 +331,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  - (uint64_t)dpadAt:(CGPoint)p {   // 8 directions: 45° each, diagonals press two keys; a small centre circle counts as none
      CGPoint c = self.dpadCenter; CGFloat dx = p.x - c.x, dy = p.y - c.y;
      if (hypot(dx, dy) < self.dpadR * 0.25) return 0;
-@@ -317,10 +377,11 @@
+@@ -317,10 +381,11 @@
          if ([self inSwap:p]) { [_owner setObject:@(C_SWAP) forKey:t]; continue; }
          // diamond, D-pad, left stick: take the one with the smallest distance / grab radius, if it is <= 1
          CGFloat best = 1; int kind = C_NONE, idx = 0;
@@ -316,7 +345,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
          if (kind == C_NONE && !_stick[0] && float_stick_on() && [self inLeftArea:p]) { kind = C_STICK; idx = 0; _lFloat = YES; _lCentre = p; }   // the left stick floats to where the touch lands
          if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
          else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
-@@ -336,6 +397,7 @@
+@@ -336,6 +401,7 @@
          uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
          if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
          else if (c == C_STICK) { int si = (int)(v >> 8); _stickNow[si] = p;
@@ -324,7 +353,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
              if (si == 1 || _lFloat) {   // a floating stick's centre (the right one always, the left one when it floated) follows a finger past its radius, so turning back responds at once
                  CGPoint *ce = si ? &_rCentre : &_lCentre; CGFloat d = dist(p, *ce), R = [self stickR:si];
                  if (d > R) *ce = CGPointMake(p.x - (p.x - ce->x) * R / d, p.y - (p.y - ce->y) * R / d); } }
-@@ -354,7 +416,7 @@
+@@ -354,7 +420,7 @@
      }
      if (game) [self pushGame];
      [self recompute];
@@ -333,7 +362,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
  }
  - (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
  - (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
-@@ -385,7 +447,7 @@
+@@ -385,7 +451,7 @@
  static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
      CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
      t.font = f; t.fontSize = fs;
@@ -342,7 +371,7 @@ diff -ruN a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
      t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
      CFRelease(f);
  }
-@@ -395,9 +457,11 @@
+@@ -395,9 +461,11 @@
      CGFloat u = self.u;
      [CATransaction begin]; [CATransaction setDisableActions:YES];
      _controls.frame = self.layer.bounds;

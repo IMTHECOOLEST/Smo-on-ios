@@ -33,6 +33,16 @@ After the build the workflow also:
 - writes `diagnostics/compile-errors.txt` (and the first 40 lines into the run summary), so the never-compiled Objective-C and SDL3 code is checked by a real Xcode build;
 - runs `dm/tools/aspect_scan.py` on the extracted `main` NSO with `--ratio 1.43` (`aspect_scan` and `aspect_ratio` inputs) and writes `diagnostics/aspect-scan.txt`. It looks for an extracted `main` file on the runner; if nxnative removed it, the file says so.
 
+## No billing set up? Use a public repo (free macOS runners)
+
+Private repos bill macOS minutes at a multiplier; with a failed payment or a $0 spending limit the job never starts ("recent account payments have failed or your spending limit needs to be increased"). Standard GitHub-hosted runners are free in **public** repositories. Make this repo public (Settings, Danger Zone, Change visibility; it holds no game data or keys) and run Build IPA with **`allow_public` on**. In that mode:
+
+- the IPA parts and a `diagnostics.zip` go only to **draft releases** (visible to people with write access), never to artifacts, which anyone can download from a public repo;
+- the run log and summary are public: they show file names, the title ID and build output (key contents are never printed), so use throwaway names if that matters;
+- delete both draft releases when you have downloaded them, and never publish them.
+
+A free standard runner may still be too small for Odyssey's disk needs; the run stops early with a clear message if so.
+
 ## Limits to check before running
 
 - **Disk:** nxnative needs about twice the NSPs' size plus 10 GB free. The script checks this and fails early. Standard GitHub Mac runners list only 14 GB of storage, so you will likely need a larger or self-hosted Mac (`runner` input).

@@ -7,7 +7,9 @@
 #   scripts/publish_release_parts.sh OUT_DIR
 #
 # Environment: GITHUB_REPOSITORY and GH_TOKEN (for gh), GITHUB_RUN_ID (used in the tag),
-#              PART_BYTES (default 1992294400 = 1900 MiB).
+#              PART_BYTES (default 1992294400 = 1900 MiB),
+#              DIAG_RELEASE=1 also zips OUT_DIR/diagnostics into a second draft release (diag-<run id>), for
+#              public repositories where a diagnostics artifact would be downloadable by anyone.
 set -euo pipefail
 
 OUT_DIR="${1:?usage: publish_release_parts.sh OUT_DIR}"
@@ -21,6 +23,16 @@ sha256() {
 }
 
 cd "$OUT_DIR"
+if [[ "${DIAG_RELEASE:-0}" == "1" && -d diagnostics ]]; then
+  dz="$(mktemp -d)/diagnostics.zip"
+  zip -qr "$dz" diagnostics
+  echo "Publishing diagnostics to draft release diag-${RUN_ID}"
+  gh release create "diag-${RUN_ID}" "$dz" \
+    --repo "$REPO" --draft \
+    --title "Diagnostics (run ${RUN_ID})" \
+    --notes "Logs, survey and scan output of run ${RUN_ID}. Delete this release when you are done."
+  rm -f "$dz"
+fi
 shopt -s nullglob
 ipas=( *.ipa )
 if (( ${#ipas[@]} == 0 )); then

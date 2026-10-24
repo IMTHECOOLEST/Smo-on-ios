@@ -300,6 +300,24 @@ class PublishReleaseParts(unittest.TestCase):
             self.assertEqual(joined, data)  # parts rejoin to the original, in order
             self.assertEqual(sorted(p.name for p in out.iterdir()), ["Game.ipa"])  # parts removed afterwards
 
+    def test_diagnostics_release_only_when_asked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            out, bindir, log = tmp / "out", tmp / "bin", tmp / "gh.log"
+            (out / "diagnostics").mkdir(parents=True)
+            bindir.mkdir()
+            self.make_fake_gh(bindir)
+            (out / "diagnostics" / "compile-errors.txt").write_text("x\n")
+            r = self.run_script(out, bindir, log)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse(log.exists())  # no DIAG_RELEASE: nothing published, and no IPA either
+            r = self.run_script(out, bindir, log, DIAG_RELEASE="1")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            args = log.read_text().split("\n")
+            self.assertEqual(args[:3], ["release", "create", "diag-123"])
+            self.assertIn("--draft", args)
+            self.assertTrue(any(a.endswith("diagnostics.zip") for a in args))
+
     def test_no_ipa_is_a_no_op(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

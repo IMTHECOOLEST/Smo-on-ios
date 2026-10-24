@@ -43,6 +43,10 @@ on:
         description: "Home-screen app name (optional)"
         type: string
         default: ""
+      allow_public:
+        description: "Allow this run in a PUBLIC repository (standard macOS runners are free there). The IPA and diagnostics then go only to draft releases, never to artifacts"
+        type: boolean
+        default: false
       release_parts:
         description: "Also attach the IPA, split into parts under 2 GiB, to a draft release (an IPA of several GB often exceeds the artifact quota)"
         type: boolean
@@ -62,16 +66,24 @@ jobs:
     permissions:
       contents: write   # only used to create the draft release holding the IPA parts
     steps:
-      # The IPA embeds your game's files. Artifacts of public repositories can be
-      # downloaded by anyone, so refuse to run anywhere but a private repository.
-      - name: Refuse to run in a public repository
+      # The IPA embeds your game's files. Artifacts of public repositories can be downloaded by
+      # anyone, so a public repository is refused unless allow_public is set; with it, the IPA
+      # and the diagnostics are published only as DRAFT releases (visible to people with write
+      # access to the repo) and the public artifact uploads below are skipped.
+      - name: Check repository visibility
+        id: vis
         env:
           GH_TOKEN: ${{ github.token }}
+          ALLOW_PUBLIC: ${{ inputs.allow_public }}
         run: |
           private="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .private)"
+          echo "private=$private" >> "$GITHUB_OUTPUT"
           if [ "$private" != "true" ]; then
-            echo "::error::This repository is public. Make it private before running this workflow."
-            exit 1
+            if [ "$ALLOW_PUBLIC" != "true" ]; then
+              echo "::error::This repository is public. Make it private, or run again with allow_public turned on (outputs then go only to draft releases)."
+              exit 1
+            fi
+            echo "::notice::Public repository: the IPA and diagnostics go only to draft releases. This run's log is public, so it shows file names and build output."
           fi
 
       - uses: actions/checkout@v4
@@ -108,7 +120,7 @@ jobs:
           if [ -f "$t" ]; then echo "shader tool lock, $(head -n 1 "$t")" >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Upload diagnostics
-        if: always()
+        if: always() && steps.vis.outputs.private == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics
@@ -116,14 +128,15 @@ jobs:
           retention-days: 3
           if-no-files-found: warn
 
-      - name: Publish IPA parts to a draft release
-        if: always() && inputs.release_parts
+      - name: Publish IPA parts (and, in a public repo, diagnostics) to draft releases
+        if: always() && steps.vis.outcome == 'success' && (inputs.release_parts || steps.vis.outputs.private != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
+          DIAG_RELEASE: ${{ steps.vis.outputs.private != 'true' && '1' || '0' }}
         run: bash scripts/publish_release_parts.sh "${{ runner.temp }}/smo-out"
 
       - name: Upload IPA
-        if: always()
+        if: always() && steps.vis.outputs.private == 'true'
         continue-on-error: true   # a quota failure must not hide the other outputs
         uses: actions/upload-artifact@v4
         with:

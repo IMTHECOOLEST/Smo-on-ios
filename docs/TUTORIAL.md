@@ -95,6 +95,7 @@ That link is valid for 24 hours. Delete the object when the build is done. (GitH
 - `nxnative_ref`: `main`, or a full commit SHA to pin a version. The run summary shows which commit was used.
 - `apply_patches`: leave on to apply `patches/*.patch` (put `controls-1_43.patch` there first). `nxnative_url` must be the repo the patch was made against.
 - `aspect_scan` / `aspect_ratio`: after the build, scan the main NSO for 16:9 sites (default ratio `1.43`); read `diagnostics/aspect-scan.txt`.
+- `allow_public`: turn on to run in a public repo (free macOS minutes); see "No billing set up?" in the README. The result is then in draft releases `IPA parts` and `Diagnostics`, not in artifacts.
 - `runner`: `macos-26` by default. If the run stops with a disk-space message, use a larger or self-hosted Mac.
 - `release_parts`: leave on. See B6.
 

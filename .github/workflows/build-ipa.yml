@@ -19,6 +19,22 @@ on:
         description: "nxnative branch, tag or commit SHA (pin a SHA for reproducible builds)"
         type: string
         default: main
+      nxnative_url:
+        description: "nxnative repository the patches in patches/ were made against"
+        type: string
+        default: "https://github.com/IMTHECOOLEST/NXNATIVE-1.43.1.git"
+      apply_patches:
+        description: "Apply patches/*.patch (the controls and 1.43 work) to nxnative before building"
+        type: boolean
+        default: true
+      aspect_scan:
+        description: "After the build, scan the extracted main NSO for 16:9 sites and write diagnostics/aspect-scan.txt"
+        type: boolean
+        default: true
+      aspect_ratio:
+        description: "Ratio for the aspect scan"
+        type: string
+        default: "1.43"
       runner:
         description: "Runner label. macos-26 is the standard arm64 Mac; use a larger or self-hosted Mac if the disk is too small"
         type: string
@@ -65,7 +81,11 @@ jobs:
           INPUT_ZIP_URL: ${{ secrets.INPUT_ZIP_URL }}
           INPUT_ZIP_SHA256: ${{ secrets.INPUT_ZIP_SHA256 }}
           OUTPUT_PUT_URL: ${{ secrets.OUTPUT_PUT_URL }}
+          NXNATIVE_URL: ${{ inputs.nxnative_url }}
           NXNATIVE_REF: ${{ inputs.nxnative_ref }}
+          APPLY_PATCHES: ${{ inputs.apply_patches && '1' || '0' }}
+          ASPECT_SCAN: ${{ inputs.aspect_scan && '1' || '0' }}
+          ASPECT_RATIO: ${{ inputs.aspect_ratio }}
           MODE: ${{ inputs.mode }}
           TITLE_ID: ${{ inputs.title_id }}
           APP_NAME: ${{ inputs.app_name }}
@@ -80,6 +100,10 @@ jobs:
           if [ -f "$f" ]; then echo "nxnative commit: \`$(cat "$f")\`" >> "$GITHUB_STEP_SUMMARY"; fi
           p="${{ runner.temp }}/smo-out/diagnostics/profile-status.txt"
           if [ -f "$p" ]; then echo "$(cat "$p")" >> "$GITHUB_STEP_SUMMARY"; fi
+          pt="${{ runner.temp }}/smo-out/diagnostics/patches.txt"
+          if [ -f "$pt" ]; then { echo "patches:"; sed 's/^/- /' "$pt"; } >> "$GITHUB_STEP_SUMMARY"; fi
+          ce="${{ runner.temp }}/smo-out/diagnostics/compile-errors.txt"
+          if [ -s "$ce" ]; then { echo "compile errors (first 40 lines):"; echo '```'; head -n 40 "$ce"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"; fi
           t="${{ runner.temp }}/smo-out/diagnostics/toolchain-lock.txt"
           if [ -f "$t" ]; then echo "shader tool lock, $(head -n 1 "$t")" >> "$GITHUB_STEP_SUMMARY"; fi
 

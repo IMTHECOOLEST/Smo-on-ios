@@ -24,6 +24,15 @@ Full walkthrough: **[docs/TUTORIAL.md](docs/TUTORIAL.md)** (prepare the files, b
 4. **Actions, Build IPA, Run workflow.** Leave `mode` on `auto` and `release_parts` on.
 5. Download the IPA parts from the draft release, join them (`cat` and check the hash in the notes), and install.
 
+## Controls and 1.43:1 work (patches)
+
+Put `controls-1_43.patch` (from the earlier chat) in `patches/`. The workflow applies every `patches/*.patch` to the nxnative checkout before building (`apply_patches` input, on by default). Set `nxnative_url` and `nxnative_ref` to the repo and commit the patch was made against; if it does not apply, the run stops and `diagnostics/patches.txt` says why.
+
+After the build the workflow also:
+
+- writes `diagnostics/compile-errors.txt` (and the first 40 lines into the run summary), so the never-compiled Objective-C and SDL3 code is checked by a real Xcode build;
+- runs `dm/tools/aspect_scan.py` on the extracted `main` NSO with `--ratio 1.43` (`aspect_scan` and `aspect_ratio` inputs) and writes `diagnostics/aspect-scan.txt`. It looks for an extracted `main` file on the runner; if nxnative removed it, the file says so.
+
 ## Limits to check before running
 
 - **Disk:** nxnative needs about twice the NSPs' size plus 10 GB free. The script checks this and fails early. Standard GitHub Mac runners list only 14 GB of storage, so you will likely need a larger or self-hosted Mac (`runner` input).

@@ -4,6 +4,7 @@ import io
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -761,3 +762,71 @@ class CloudBuildToolLock(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApplyPatches(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.nx = self.tmp / "nx"
+        self.nx.mkdir()
+        (self.nx / "a.txt").write_text("one\n")
+        self.pdir = self.tmp / "patches"
+        self.pdir.mkdir()
+        self.report = self.tmp / "out" / "patches.txt"
+        subprocess.run(["git", "init", "-q", str(self.nx)], check=True)
+        subprocess.run(["git", "-C", str(self.nx), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.nx), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qm", "x"], check=True)
+        (self.nx / "a.txt").write_text("two\n")
+        self.diff = subprocess.run(["git", "-C", str(self.nx), "diff"], capture_output=True,
+                                   text=True, check=True).stdout
+        subprocess.run(["git", "-C", str(self.nx), "checkout", "-q", "a.txt"], check=True)
+
+    def run_script(self):
+        return subprocess.run(["bash", str(ROOT / "scripts" / "apply_patches.sh"), str(self.nx),
+                               str(self.pdir), str(self.report)], capture_output=True, text=True)
+
+    def test_no_patches_is_fine(self):
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no patches", self.report.read_text())
+
+    def test_applies_then_skips_when_already_applied(self):
+        (self.pdir / "a.patch").write_text(self.diff)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.nx / "a.txt").read_text(), "two\n")
+        self.assertIn("applied: a.patch", self.report.read_text())
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("already applied", self.report.read_text())
+
+    def test_patch_that_does_not_apply_fails(self):
+        (self.pdir / "a.patch").write_text(self.diff)
+        (self.nx / "a.txt").write_text("something else\n")
+        r = self.run_script()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("FAILED: a.patch", self.report.read_text())
+
+
+class AspectScan(unittest.TestCase):
+    def test_skips_without_the_tool_and_never_fails(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        rep = tmp / "r.txt"
+        r = subprocess.run(["bash", str(ROOT / "scripts" / "aspect_scan.sh"), str(tmp), "1.43",
+                            str(rep), str(tmp)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("skipped", rep.read_text())
+
+    def test_reports_when_no_nso_is_found(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "dm" / "tools").mkdir(parents=True)
+        (tmp / "dm" / "tools" / "aspect_scan.py").write_text("print('x')\n")
+        rep = tmp / "r.txt"
+        r = subprocess.run(["bash", str(ROOT / "scripts" / "aspect_scan.sh"), str(tmp), "1.43",
+                            str(rep), str(tmp / "empty")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no extracted", rep.read_text())

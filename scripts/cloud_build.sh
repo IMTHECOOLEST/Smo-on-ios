@@ -11,6 +11,9 @@
 #                      for TITLE_ID, otherwise survey)
 #   TITLE_ID           base title ID to require (default: 0100000000010000)
 #   APP_NAME           optional home-screen name
+#   APPLY_PATCHES      1 (default) applies patches/*.patch to the nxnative checkout; 0 skips
+#   ASPECT_SCAN        1 (default) runs dm/tools/aspect_scan.py on the extracted main NSO
+#   ASPECT_RATIO       ratio for the scan (default: 1.43)
 #   WORK_DIR           scratch dir (default: ./work)
 #   OUT_DIR            where IPA and diagnostics are collected (default: ./out)
 #   KEEP_WORK          set to 1 to keep extracted game files and keys afterwards
@@ -28,10 +31,16 @@ TITLE_ID="${TITLE_ID:-0100000000010000}"
 WORK_DIR="${WORK_DIR:-$PWD/work}"
 OUT_DIR="${OUT_DIR:-$PWD/out}"
 KEEP_WORK="${KEEP_WORK:-0}"
+APPLY_PATCHES="${APPLY_PATCHES:-1}"
+ASPECT_SCAN="${ASPECT_SCAN:-1}"
+ASPECT_RATIO="${ASPECT_RATIO:-1.43}"
 
 case "$MODE" in auto|survey|build) ;; *) echo "error: MODE must be auto, survey or build" >&2; exit 2 ;; esac
 if [[ ! "$NXNATIVE_REF" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]]; then
   echo "error: NXNATIVE_REF has unexpected characters" >&2; exit 2
+fi
+if [[ ! "$NXNATIVE_URL" =~ ^https://[A-Za-z0-9._/-]+$ ]]; then
+  echo "error: NXNATIVE_URL must be an https:// URL" >&2; exit 2
 fi
 if [[ ! "$TITLE_ID" =~ ^[0-9A-Fa-f]{16}$ ]]; then
   echo "error: TITLE_ID must be 16 hex digits" >&2; exit 2
@@ -111,6 +120,11 @@ NX_SHA="$(git -C "$NX_DIR" rev-parse HEAD)"
 echo "nxnative commit: $NX_SHA"
 echo "$NX_SHA" > "$OUT_DIR/diagnostics/nxnative-commit.txt"
 
+if [[ "$APPLY_PATCHES" == "1" ]]; then
+  step "Applying patches"
+  bash "$REPO_ROOT/scripts/apply_patches.sh" "$NX_DIR" "$REPO_ROOT/patches" "$OUT_DIR/diagnostics/patches.txt"
+fi
+
 PROFILE_STATUS="$(bash "$REPO_ROOT/scripts/has_profile.sh" "$NX_DIR" "$TITLE_ID")"
 echo "profile for $TITLE_ID in this nxnative commit: $PROFILE_STATUS"
 echo "profile $TITLE_ID: $PROFILE_STATUS" > "$OUT_DIR/diagnostics/profile-status.txt"
@@ -149,11 +163,22 @@ args=("$IN_DIR/nsp" -k "$IN_DIR/prod.keys")
 
 set +e
 ( cd "$NX_DIR" && python scripts/build_ipa_from_nsp.py "${args[@]}" ) 2>&1 | tee "$OUT_DIR/diagnostics/nxnative-build.log"
-rc=${PIPESTATUS}
+rc=${PIPESTATUS[0]}
 set -e
 
 # 6. Collect outputs ----------------------------------------------------------
 step "Collecting outputs"
+
+# Compiler errors, so a failed Objective-C build is readable without opening the full log.
+grep -E 'error:|fatal error:|BUILD FAILED|Traceback' "$OUT_DIR/diagnostics/nxnative-build.log" \
+  | head -n 200 > "$OUT_DIR/diagnostics/compile-errors.txt" || true
+
+if [[ "$ASPECT_SCAN" == "1" ]]; then
+  step "Scanning the main NSO for 16:9 sites (ratio $ASPECT_RATIO)"
+  bash "$REPO_ROOT/scripts/aspect_scan.sh" "$NX_DIR" "$ASPECT_RATIO" \
+    "$OUT_DIR/diagnostics/aspect-scan.txt" "$IN_DIR" "$WORK_DIR" "${RUNNER_TEMP:-$WORK_DIR}"
+fi
+
 find "$IN_DIR/nsp" -mindepth 2 \
   \( -name '*.md' -o -name '*.log' -o -name '*.tsv' -o -name '*.h' -o -name '*.txt' \) \
   -size -5M -type f -print0 2>/dev/null |

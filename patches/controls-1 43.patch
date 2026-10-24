@@ -1,0 +1,1733 @@
+diff -ruN orig/nxnative-main/.gitignore nx/nxnative-main/.gitignore
+--- orig/nxnative-main/.gitignore	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/.gitignore	2026-10-24 06:47:57.908370915 +0000
+@@ -4,3 +4,6 @@
+ .iosdd_*/
+ .DS_Store
+ __pycache__/
++
++# SDL3 for iOS built by dm/ios/tools/build_sdl3.sh (the optional SDL3 gamepad backend)
++dm/third_party/sdl3-ios/
+diff -ruN orig/nxnative-main/README.md nx/nxnative-main/README.md
+--- orig/nxnative-main/README.md	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/README.md	2026-10-24 06:49:52.268228938 +0000
+@@ -84,6 +84,10 @@
+ **Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. Wonder, Engage, Dread, 13 Sentinels, Link's Awakening, Ace Attorney Investigations Collection, Unicorn Overlord, Rhythm Heaven Groove, Octopath Traveler 0, Pokémon Legends: Z-A, Cuphead, Absolum, Brain Memory Training Academy, The Great Ace Attorney Chronicles, STEINS;GATE RE:BOOT, Big Brain Academy: Brain vs. Brain, Patrick's Parabox, Celeste and Raging Loop start in 2D, the other games in 3D (STEINS;GATE RE:BOOT's quick save is R3, in the 3D layout). In 3D, the right stick (the camera in most games) is not drawn: swipe on the right third of the screen, starting anywhere off the buttons. In Super Mario Galaxy and Super Mario Galaxy 2, other touches outside the controls move the pointer; in Captain Toad: Treasure Tracker they touch the game's screen (touch blocks, stun enemies), and in Big Brain Academy: Brain vs. Brain too (its menus and activities).
+ A connected game controller hides the touch controls and keeps every button.
+ 
++**Touch controls scale with the screen.** The keys grow on bigger screens (an iPad's are about 1.6 times an iPhone Pro Max's) and shrink on small ones, and they never overlap. In games that do not use the touch screen, a touch anywhere in the left 40% of the screen on no key holds the left stick centred where you put your thumb, and the stick follows your thumb if you slide past its edge; a touch near the drawn ring still holds the fixed ring. Each key press gives a light tap. `Documents/env.txt` takes `DM_PAD_SCALE=1.2` (0.5 to 2, bigger or smaller keys), `DM_PAD_FLOAT=0` (always the fixed ring), `DM_PAD_HAPTICS=0` (no tap).
++
++**Controllers.** The face keys use the Xbox layout: A at the bottom, B on the right, X on the left, Y at the top (`DM_PAD_FACE=nintendo` goes back to the Nintendo positions: A right, B bottom). A **DualSense** (and any controller with a gyro) also gives the game its motion, and its two handles play the game's HD rumble: each handle layers the low and high band of the game's vibration on two haptic events, so the strength and the pitch both come through. The DualSense's speaker is not reachable from an iOS app, so it stays silent. `DM_MOTION=0` and `DM_RUMBLE=0` turn them off, `DM_RUMBLE_GAIN=1.3` scales the rumble. `DM_PAD_BACKEND=sdl3` reads controllers through SDL3 instead of GameController, in an app built with it (see `docs/development.md`).
++
+ **Shaking.** Shake the iPhone to shake the controller, in games that read its motion: Super Mario Odyssey's motion moves (such as the cap throw on a shake) need it, and Odyssey only takes them in its default docked mode. A light bump does not count; a sharp flick of the phone does.
+ 
+ - **Game language** is English by default. Pick another when packing with `--language` (`-l`), by code or by name: `-l ja`, `-l zh-Hans`, `-l French` (`LANGUAGE` in Spyder). It must be one the game has; the script prints the game's languages and stops on one it lacks. To change it without rebuilding, add a line such as `DM_LANG=zh-Hans` to `Documents/env.txt`.
+diff -ruN orig/nxnative-main/dm/gfx/nvn/nvn_mtl.m nx/nxnative-main/dm/gfx/nvn/nvn_mtl.m
+--- orig/nxnative-main/dm/gfx/nvn/nvn_mtl.m	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/gfx/nvn/nvn_mtl.m	2026-10-23 20:51:28.046802649 +0000
+@@ -7414,6 +7414,7 @@
+ #define SHOTQ_MAX 8
+ static struct { uint64_t frame; char path[1024]; } g_shotq[SHOTQ_MAX]; static int g_nshotq;
+ static pthread_mutex_t g_shotq_mu = PTHREAD_MUTEX_INITIALIZER;
++void dm_picture_aspect_set(double aspect);   // hle_touch.c (front.h)
+ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]);
+ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int uv_i);
+ // Game picture needed by the whole-window screenshot (front end window_shot; no longer does drawViewHierarchy on a Metal layer with the display link attached): at the next present, the present thread draws the same frame
+@@ -7691,6 +7692,7 @@
+         }
+         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
+     }
++    dm_picture_aspect_set((double)cw / (double)ch);   // the touch screen is measured on the picture (front.h)
+     static uint64_t last_crop[8]; uint64_t meta[8] = {src.width, src.height, cx, cy, cw, ch, dst.width, dst.height};
+     if (memcmp(meta, last_crop, sizeof meta)) { memcpy(last_crop, meta, sizeof meta);
+         MLOG("present crop: source texture %lux%lu, valid %lu,%lu %lux%lu → target %lux%lu", (unsigned long)src.width, (unsigned long)src.height,
+@@ -7729,6 +7731,7 @@
+         }
+         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
+     }
++    dm_picture_aspect_set((double)cw / (double)ch);   // the touch screen is measured on the picture (front.h)
+     present_pipeline(dst.pixelFormat);
+     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
+     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
+diff -ruN orig/nxnative-main/dm/host/dm_input.h nx/nxnative-main/dm/host/dm_input.h
+--- orig/nxnative-main/dm/host/dm_input.h	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/host/dm_input.h	2026-10-24 06:50:38.205545725 +0000
+@@ -17,6 +17,20 @@
+ // ORed bitwise and a stick uses the controller's value if it is non-zero. All 0 when no controller is connected, so values are bit-for-bit the same as before
+ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+ 
++// Motion of a physical controller (the iOS front end, DmController.m): one sample in the Switch controller frame, in which a controller lying flat, face up, reads acceleration (0, 0, -1) G
++// (hle_hid.c, six-axis section): acceleration in G, angular velocity in rad/s. Samples may arrive at any rate and from any thread. The host keeps the newest, integrates the angular velocity into the
++// six-axis angle and direction itself, and reports the sensor as the synthetic one (at rest, or shaken) again 0.5 s after the last sample or after dm_pad_motion_clear.
++// Without calls (the Mac host, a phone with no controller) nothing changes: the sensor lies flat and shakes only while DM_BTN_SHAKE is held.
++void dm_pad_motion_set(const float acc_g[3], const float gyro_rps[3]);
++void dm_pad_motion_clear(void);
++
++// Rumble of a physical controller. While a sink is attached the host reports vibration devices (two: left and right, linear resonant actuators) and IsVibrationPermitted; with none (the default)
++// it reports no vibration device, as before. device 0 = left, 1 = right. Each vibration value holds two bands, an amplitude 0..1 and a frequency 40..1252 Hz (both clamped by the host);
++// the sink is called from the game's threads (with the host's lock held: it must be quick and must not call back), only when a device's clamped value changed, and with zeros (a silent band's frequency is 0)
++// when the game silences a device. Every device starts silent: attaching or detaching resets what the host remembers, so a value after it reaches the sink unless it is silence
++typedef void (*dm_rumble_fn)(int device, float amp_lo, float freq_lo, float amp_hi, float freq_hi);
++void dm_rumble_attach(dm_rumble_fn fn);   // NULL detaches
++
+ // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
+ // Fields read_start_ns/time_ns use the same host now_ns(); the front-end publish window must use the same helper, and a read interval that spans a publish must not be force-matched.
+ // State changes + at most one activity witness per second, limit_reached after 1024 entries; no file is written when the environment variable is not set.
+diff -ruN orig/nxnative-main/dm/host/front.h nx/nxnative-main/dm/host/front.h
+--- orig/nxnative-main/dm/host/front.h	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/host/front.h	2026-10-23 20:51:27.957094957 +0000
+@@ -22,6 +22,10 @@
+ // The host converts to the panel coordinates the game reads, 1280x720 (x·1280, y·720), and latches short taps (a down and up between two reads is reported at least once). May be called from any thread.
+ typedef struct { uint32_t id; float x, y; } dm_touch;
+ void dm_touch_set(const dm_touch *t, int n);
++// The aspect ratio (width / height) of the game's picture as it is presented, which the touch screen's normalized coordinates are measured on: the front end divides the screen position by the picture's rectangle,
++// the Metal present (nvn_mtl.m present_encode / present_encode_m4) keeps the picture's aspect inside the view and sets it on every present. 16:9 until the first frame. Any thread
++void dm_picture_aspect_set(double aspect);
++double dm_picture_aspect(void);
+ 
+ // Save not written (called by the host's hle_fs.c; the iOS front end provides a strong implementation of the same name that shows the native prompt "Not enough storage. Progress was not saved"; the default weak implementation only logs).
+ // Timing: when a save write fails (disk full etc.) within one of the game's save transactions (between two Commits), so that this Commit is refused and the previously committed save is unchanged, it is called once per refused transaction;
+diff -ruN orig/nxnative-main/dm/host/hle_hid.c nx/nxnative-main/dm/host/hle_hid.c
+--- orig/nxnative-main/dm/host/hle_hid.c	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/host/hle_hid.c	2026-10-23 20:50:18.382799050 +0000
+@@ -1,7 +1,9 @@
+ // nn::hid (controller): on the real device shared memory is read through the hid service; the host takes the current state written by the front end (Mac keyboard / controller, iOS virtual gamepad / controller).
+ // Generic, game-independent version: one standard controller. DM_OPMODE=0 (handheld) → handheld controller (Npad id 0x20); otherwise → 1P full-key controller (id 0).
+-// Six-axis sensor: one per connected controller (two for handheld), at rest lying flat, shaken side to side while the front end holds DM_BTN_SHAKE (see the six-axis section below).
+-// Vibration, mouse, keyboard: not provided by the host (device count 0 / not connected); the controller applet reports "1 player, current controller selected".
++// Six-axis sensor: one per connected controller (two for handheld), at rest lying flat, shaken side to side while the front end holds DM_BTN_SHAKE, or the motion of a physical controller that
++// reports it (dm_pad_motion_set; see the six-axis section below).
++// Vibration: two devices (left, right) while a physical controller's rumble is attached (dm_rumble_attach), none otherwise. Mouse, keyboard: not provided by the host (device count 0 / not connected);
++// the controller applet reports "1 player, current controller selected".
+ #include "hle.h"
+ #include "dm_input.h"
+ #include "front.h"
+@@ -172,10 +174,67 @@
+ #define SHAKE_G 3.0
+ #define SHAKE_REV 1.5
+ static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < atomic_load(&g_shake_end); }
+-static void six_sample(SixAxisState *s, int64_t samp) {
++// A physical controller's own motion (dm_pad_motion_set, the front end): the newest sample, in the Switch frame (flat, face up: acceleration (0, 0, -1) G). The angular velocity comes in rad/s and the
++// state wants revolutions: the angle is its integral per axis; the direction (the controller's three axes written in the frame the sensor started in, one axis per row, as the shaking one below)
++// turns by the same angular velocity: each axis is rotated about the world-frame angular velocity (the device-frame rates carried along the current axes) by its length times dt, exactly (Rodrigues), then
++// the rows are made orthonormal again. A gap of more than MOT_STALE_NS (or the first sample) starts again from the identity; dt is capped at 0.1 s
++typedef struct { int ok; float acc[3], gyro[3], angle[3], dir[9]; } mot_t;   // gyro in revolutions / s
++enum { MOT_STALE_NS = 500000000 };
++static struct { pthread_mutex_t mu; int valid; uint64_t last_ns; mot_t m; } g_mot = {.mu = PTHREAD_MUTEX_INITIALIZER};
++static void dir_identity(float d[9]) { memset(d, 0, 9 * sizeof *d); d[0] = d[4] = d[8] = 1; }
++static double dot3(const double a[3], const double b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
++static void cross3(const double a[3], const double b[3], double o[3]) { o[0] = a[1] * b[2] - a[2] * b[1]; o[1] = a[2] * b[0] - a[0] * b[2]; o[2] = a[0] * b[1] - a[1] * b[0]; }
++static int unit3(double v[3]) { double n = sqrt(dot3(v, v)); if (!(n > 1e-12)) return 0; v[0] /= n; v[1] /= n; v[2] /= n; return 1; }
++static void dir_turn(float dir[9], const double w_rad[3], double dt) {
++    double a[3][3]; for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) a[i][k] = dir[3 * i + k];
++    double ww[3] = {0, 0, 0};   // the angular velocity in the world frame
++    for (int j = 0; j < 3; j++) for (int k = 0; k < 3; k++) ww[k] += w_rad[j] * a[j][k];
++    double mag = sqrt(dot3(ww, ww)), th = mag * dt;
++    if (th > 1e-12) {
++        double n[3] = {ww[0] / mag, ww[1] / mag, ww[2] / mag}, c = cos(th), sn = sin(th);
++        for (int i = 0; i < 3; i++) {
++            double nx[3], nd = dot3(n, a[i]); cross3(n, a[i], nx);
++            for (int k = 0; k < 3; k++) a[i][k] = a[i][k] * c + nx[k] * sn + n[k] * nd * (1 - c);
++        }
++    }
++    if (!unit3(a[0])) { a[0][0] = 1; a[0][1] = a[0][2] = 0; }   // Gram-Schmidt: row 0 stays, row 1 loses its part along it, row 2 is their cross product
++    double d01 = dot3(a[0], a[1]); for (int k = 0; k < 3; k++) a[1][k] -= d01 * a[0][k];
++    if (!unit3(a[1])) { double t[3] = {0, 1, 0}; if (fabs(a[0][1]) > 0.9) { t[1] = 0; t[2] = 1; } double d = dot3(a[0], t); for (int k = 0; k < 3; k++) a[1][k] = t[k] - d * a[0][k]; unit3(a[1]); }
++    cross3(a[0], a[1], a[2]);
++    for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) dir[3 * i + k] = (float)a[i][k];
++}
++static float finite_or_0(float v) { return isfinite(v) ? v : 0.f; }
++void dm_pad_motion_set(const float acc_g[3], const float gyro_rps[3]) {
++    uint64_t t = now_ns(); double w[3];
++    for (int i = 0; i < 3; i++) w[i] = finite_or_0(gyro_rps[i]);
++    pthread_mutex_lock(&g_mot.mu);
++    double dt = 0;
++    if (!g_mot.valid || t - g_mot.last_ns > MOT_STALE_NS) { memset(&g_mot.m, 0, sizeof g_mot.m); dir_identity(g_mot.m.dir); }
++    else { dt = (double)(t - g_mot.last_ns) / 1e9; if (dt > 0.1) dt = 0.1; }
++    for (int i = 0; i < 3; i++) {
++        g_mot.m.acc[i] = finite_or_0(acc_g[i]);
++        g_mot.m.gyro[i] = (float)(w[i] / (2 * M_PI));
++        g_mot.m.angle[i] += (float)(w[i] / (2 * M_PI) * dt);
++    }
++    if (dt > 0) dir_turn(g_mot.m.dir, w, dt);
++    g_mot.m.ok = 1; g_mot.valid = 1; g_mot.last_ns = t;
++    pthread_mutex_unlock(&g_mot.mu);
++}
++void dm_pad_motion_clear(void) { pthread_mutex_lock(&g_mot.mu); g_mot.valid = 0; pthread_mutex_unlock(&g_mot.mu); }
++static void mot_get(mot_t *o) {
++    pthread_mutex_lock(&g_mot.mu);
++    if (g_mot.valid && now_ns() - g_mot.last_ns <= MOT_STALE_NS) *o = g_mot.m; else o->ok = 0;
++    pthread_mutex_unlock(&g_mot.mu);
++}
++static void six_sample(SixAxisState *s, int64_t samp, const mot_t *mot) {
+     memset(s, 0, sizeof *s);
+     uint64_t t = (uint64_t)samp * SIX_PERIOD_NS;
+     s->delta_ns = SIX_PERIOD_NS; s->sampling = samp; s->attributes = 1;   // IsConnected
++    if (mot->ok) {   // the controller's own motion; a phone shake (DM_BTN_SHAKE) still adds its swing on top
++        memcpy(s->acc, mot->acc, sizeof s->acc); memcpy(s->gyro, mot->gyro, sizeof s->gyro); memcpy(s->angle, mot->angle, sizeof s->angle); memcpy(s->dir, mot->dir, sizeof s->dir);
++        if (shaking(t)) { double ph = 2 * M_PI * SHAKE_HZ * (double)(t - atomic_load(&g_shake_t0)) / 1e9; s->acc[0] += (float)(SHAKE_G * sin(ph)); s->gyro[2] += (float)(SHAKE_REV * sin(ph)); }
++        return;
++    }
+     s->acc[2] = -1;
+     double yaw = 0;
+     if (shaking(t)) {
+@@ -194,7 +253,8 @@
+     if (n <= 0) return 0;
+     if (!six_connected(h)) { memset(out, 0, sizeof *out * (size_t)n); return 0; }
+     int64_t samp = (int64_t)(guest_ns() / SIX_PERIOD_NS);
+-    for (int i = 0; i < n; i++) six_sample(&out[i], samp - i);
++    mot_t mot; mot_get(&mot);   // one reading for every entry: the controller keeps no history here
++    for (int i = 0; i < n; i++) six_sample(&out[i], samp - i, &mot);
+     return n;
+ }
+ HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "six-axis sensor handles: two for handheld / dual Joy-Cons, one otherwise",
+@@ -206,15 +266,62 @@
+ HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStart, const uint32_t *h) { (void)h; }
+ HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "six-axis sensor states: every requested entry, newest first",
+           int, h_hid_SixStates, SixAxisState *out, int n, const uint32_t *h) { return six_states(out, n, *h); }
+-// Vibration: no devices
+-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission; not supported by the host", unsigned, h_hid_VibPermit, void) { return 0; }
+-HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices: 0",
+-          int, h_hid_VibHandles, void *h, int n, const uint32_t *id, uint32_t style) { (void)h; (void)n; (void)id; (void)style; return 0; }
+-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration; not supported by the host", void, h_hid_InitVib, const void *h) { (void)h; }
+-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "vibration; not supported by the host", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
++// Vibration. While a physical controller's rumble is attached (dm_rumble_attach, dm_input.h) the host has two vibration devices on the connected controller, left and right, both linear resonant
++// actuators; without one it has none, as before. VibrationDeviceHandle is a u32 built as the six-axis handle is (byte 0 the style's bit number, byte 1 the npad id, byte 2 the device: 0 left, 1 right);
++// VibrationValue is four floats: amplitude low, frequency low, amplitude high, frequency high. Values are clamped (amplitude 0..1, frequency 40..1252 Hz) and a band with no amplitude carries frequency 0.
++// What each device last got is remembered (silence at first, and after attach / detach): a value equal to it does not reach the sink, which is called with the lock held so two threads cannot reorder it
++typedef struct { float v[4]; } vib_t;
++static _Atomic(dm_rumble_fn) g_rumble;
++static pthread_mutex_t g_vmu = PTHREAD_MUTEX_INITIALIZER;
++static vib_t g_vib[2];
++void dm_rumble_attach(dm_rumble_fn fn) {
++    pthread_mutex_lock(&g_vmu); memset(g_vib, 0, sizeof g_vib); atomic_store(&g_rumble, fn); pthread_mutex_unlock(&g_vmu);
++}
++static float vib_amp(float a) { return a > 0.f ? (a < 1.f ? a : 1.f) : 0.f; }   // NaN and negatives → 0
++static float vib_freq(float f) { return f > 40.f ? (f < 1252.f ? f : 1252.f) : 40.f; }   // NaN and below 40 → 40
++static vib_t vib_clean(const float *raw) {
++    vib_t o; float al = vib_amp(raw[0]), ah = vib_amp(raw[2]);
++    o.v[0] = al; o.v[1] = al > 0.f ? vib_freq(raw[1]) : 0.f; o.v[2] = ah; o.v[3] = ah > 0.f ? vib_freq(raw[3]) : 0.f;
++    return o;
++}
++static int vib_dev(uint32_t h) {   // the device a handle names, -1 when it is not on the connected controller or no rumble is attached
++    if (!atomic_load(&g_rumble)) return -1;
++    uint32_t id = connected_id(); unsigned bit = h & 0xff;
++    if ((h >> 8 & 0xff) != id || bit >= 32 || !(style_of(id) >> bit & 1)) return -1;
++    unsigned d = h >> 16 & 0xff;
++    return d < 2 ? (int)d : -1;
++}
++static void vib_send(uint32_t h, const float *raw) {
++    int d = vib_dev(h); if (d < 0) return;
++    vib_t v = vib_clean(raw);
++    pthread_mutex_lock(&g_vmu);
++    dm_rumble_fn f = atomic_load(&g_rumble);
++    if (f && memcmp(&v, &g_vib[d], sizeof v)) { g_vib[d] = v; f(d, v.v[0], v.v[1], v.v[2], v.v[3]); }
++    pthread_mutex_unlock(&g_vmu);
++}
++HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission; granted while a physical controller's rumble is attached", unsigned, h_hid_VibPermit, void) { return atomic_load(&g_rumble) != NULL; }
++HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices: left and right of the connected controller while rumble is attached, else 0",
++          int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
++    if (!atomic_load(&g_rumble) || n <= 0) return 0;
++    uint32_t have = style_of(*id) & style; if (!have) return 0;   // the connected controller's style, if the game asked for it
++    int k = have & (STYLE_JOYLEFT | STYLE_JOYRIGHT) ? 1 : 2; if (k > n) k = n;
++    for (int i = 0; i < k; i++) h[i] = (uint32_t)__builtin_ctz(have) | (*id & 0xff) << 8 | (uint32_t)i << 16;
++    return k;
++}
++HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration device initialization; nothing to set up on the host", void, h_hid_InitVib, const void *h) { (void)h; }
++HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "vibration value to the attached controller's rumble", void, h_hid_SendVib, const void *h, const void *v) {
++    uint32_t hh; memcpy(&hh, h, 4); float f[4]; memcpy(f, v, 16); vib_send(hh, f);
++}
+ // Values queued by the vibration graph (VibrationNode::Update) reach it from the sdk's internal FlushEnqueuedVibrationValues through the PLT, into the hid service proxy (sm abort). Metroid Dread
+-// sets handles on its VibrationTargets even when the host reports 0 devices, so values get queued; return success and the flush clears its count as usual
+-HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "vibration (batch, used by the vibration-pattern flush); not supported by the host", Result, h_hid_SendVibs, const void *h, const void *v, int n) { (void)h; (void)v; (void)n; return 0; }
++// sets handles on its VibrationTargets even when the host reports 0 devices, so values get queued; return success and the flush clears its count as usual. With rumble attached the values go to the sink
++HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "vibration (batch, used by the vibration-pattern flush); to the attached controller's rumble", Result, h_hid_SendVibs, const void *h, const void *v, int n) {
++    for (int i = 0; i < n; i++) { uint32_t hh; memcpy(&hh, (const uint8_t *)h + 4 * i, 4); float f[4]; memcpy(f, (const uint8_t *)v + 16 * i, 16); vib_send(hh, f); }
++    return 0;
++}
++HLE_FORCE("_ZN2nn3hid19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "vibration (public batch form); to the attached controller's rumble", Result, h_hid_SendVibsPub, const void *h, const void *v, int n) {
++    for (int i = 0; i < n; i++) { uint32_t hh; memcpy(&hh, (const uint8_t *)h + 4 * i, 4); float f[4]; memcpy(f, (const uint8_t *)v + 16 * i, 16); vib_send(hh, f); }
++    return 0;
++}
+ // Mouse / keyboard: not connected
+ HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "mouse; not provided by the host", void, h_hid_InitMouse, void) {}
+ HLE_FORCE("_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi", "mouse states: 0 entries", int, h_hid_MouseStates, void *out, int n) { (void)out; (void)n; return 0; }
+@@ -286,7 +393,12 @@
+ // Six-axis details: the current state, at rest unless shaking, fusion off
+ HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
+ HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "six-axis sensor current state", void, h_hid_SixState, SixAxisState *s, const uint32_t *h) { six_states(s, 1, *h); }
+-HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless shaking", unsigned, h_hid_SixRest, const uint32_t *h) { (void)h; return !shaking(guest_ns()); }
++// At rest: not shaken and, for a controller with motion, turning slower than 0.02 revolutions / s (about 7 degrees / s)
++HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless shaking or turning", unsigned, h_hid_SixRest, const uint32_t *h) {
++    (void)h; if (shaking(guest_ns())) return 0;
++    mot_t m; mot_get(&m);
++    return !(m.ok && m.gyro[0] * m.gyro[0] + m.gyro[1] * m.gyro[1] + m.gyro[2] * m.gyro[2] > 0.02f * 0.02f);
++}
+ // The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
+ HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "console six-axis sensor initialization; not provided by the host", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
+ HLE_FORCE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", "console six-axis sensor", Result, h_hid_SevenFini, void) { return RES_OK; }
+@@ -312,6 +424,16 @@
+ HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleEff", "six-axis sensor fusion parameters; ignored by the host", void, h_hid_FusionSet, const uint32_t *h, float a, float b) { (void)h; (void)a; (void)b; }
+ HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "six-axis sensor fusion parameters; ignored by the host", void, h_hid_FusionReset, const uint32_t *h) { (void)h; }
+ HLE_FORCE("_ZN2nn3hid41IsFirmwareUpdateAvailableForSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor firmware update: none", unsigned, h_hid_SixFw, const uint32_t *h) { (void)h; return 0; }
+-// Vibration device info / actual value: no device, zeroed
+-HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration device info: none", void, h_hid_VibInfo, uint32_t *info, const void *h) { (void)h; info[0] = 0; info[1] = 0; }
+-HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "actual vibration value: 0", void, h_hid_VibActual, float *v, const void *h) { (void)h; memset(v, 0, 16); }
++// Vibration device info / actual value: see the vibration section above
++// VibrationDeviceInfo = { type (1 = linear resonant actuator), position (1 = left, 2 = right) }; a handle that is not on the connected controller reads as no device (0, 0)
++HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration device info: a linear resonant actuator, left or right", void, h_hid_VibInfo, uint32_t *info, const void *h) {
++    uint32_t hh; memcpy(&hh, h, 4); int d = vib_dev(hh);
++    info[0] = d >= 0 ? 1 : 0; info[1] = d >= 0 ? (uint32_t)d + 1 : 0;
++}
++// What the device last got (silence for a handle that is not on the connected controller); a silent band shows the default frequency, 160 Hz low and 320 Hz high
++HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "actual vibration value: what the device last got", void, h_hid_VibActual, float *v, const void *h) {
++    uint32_t hh; memcpy(&hh, h, 4); int d = vib_dev(hh);
++    vib_t x; memset(&x, 0, sizeof x);
++    if (d >= 0) { pthread_mutex_lock(&g_vmu); x = g_vib[d]; pthread_mutex_unlock(&g_vmu); }
++    v[0] = x.v[0]; v[1] = x.v[1] > 0.f ? x.v[1] : 160.f; v[2] = x.v[2]; v[3] = x.v[3] > 0.f ? x.v[3] : 320.f;
++}
+diff -ruN orig/nxnative-main/dm/host/hle_touch.c nx/nxnative-main/dm/host/hle_touch.c
+--- orig/nxnative-main/dm/host/hle_touch.c	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/host/hle_touch.c	2026-10-23 20:51:27.958125764 +0000
+@@ -9,10 +9,15 @@
+ #include "dm.h"
+ #include "front.h"
+ #include <pthread.h>
++#include <stdatomic.h>
++#include <math.h>
+ enum { F_EMPTY, F_DOWN, F_LIFTED };
+ static struct { int st, reported, again; float x, y, ax, ay; } g_f[16];   // again/ax/ay: the same id was pressed again before End went out (the next read reports End first, then the new Start)
+ static pthread_mutex_t g_tl = PTHREAD_MUTEX_INITIALIZER;
+ static int64_t g_tsamp; static uint64_t g_tlast_ns;
++static _Atomic double g_pic_aspect = 16.0 / 9.0;   // the presented picture's aspect, see front.h
++void dm_picture_aspect_set(double a) { if (isfinite(a) && a > 0.2 && a < 5.0) atomic_store(&g_pic_aspect, a); }
++double dm_picture_aspect(void) { return atomic_load(&g_pic_aspect); }
+ 
+ void dm_touch_set(const dm_touch *t, int n) {
+     pthread_mutex_lock(&g_tl);
+diff -ruN orig/nxnative-main/dm/host/tests/Makefile nx/nxnative-main/dm/host/tests/Makefile
+--- orig/nxnative-main/dm/host/tests/Makefile	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/host/tests/Makefile	2026-10-24 06:47:57.908056767 +0000
+@@ -4,7 +4,7 @@
+ # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
+ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
+ GAME_H = ../gen/$(GAME)/game_profile.h
+-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font
++run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_pad_core $(B)/t_hid_pad
+ 	$(B)/t_touch
+ 	$(B)/t_oe 2>/dev/null
+ 	$(B)/t_fs 2>/dev/null
+@@ -20,10 +20,18 @@
+ 	$(B)/t_pctl
+ 	$(B)/t_time
+ 	$(B)/t_shared_font
++	$(B)/t_pad_core
++	$(B)/t_hid_pad
+ $(GAME_H):
+ 	$(MAKE) -C .. game_profile GAME=$(GAME)
+ $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_touch.c ../hle_touch.c
++# Controller core (face layouts, axis maps, HD rumble mapping): no game profile needed
++$(B)/t_pad_core: t_pad_core.c ../../ios/Sources/dm_pad_core.c ../../ios/Sources/dm_pad_core.h | $(B)
++	clang -O1 -Wall -o $@ t_pad_core.c ../../ios/Sources/dm_pad_core.c
++# hle_hid.c itself (vibration devices and a controller's motion), with the host services around it stubbed in the test
++$(B)/t_hid_pad: t_hid_pad.c ../hle_hid.c ../hle.h ../dm.h ../dm_input.h $(GAME_H) | $(B)
++	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_hid_pad.c
+ $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h $(GAME_H) | $(B)
+ 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_thread_leak.c
+ $(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
+diff -ruN orig/nxnative-main/dm/host/tests/t_hid_pad.c nx/nxnative-main/dm/host/tests/t_hid_pad.c
+--- orig/nxnative-main/dm/host/tests/t_hid_pad.c	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/host/tests/t_hid_pad.c	2026-10-23 20:51:01.005884256 +0000
+@@ -0,0 +1,175 @@
++// HID unit test: the vibration devices (hle_hid.c, dm_rumble_attach) and a physical controller's motion in the six-axis state (dm_pad_motion_set).
++// hle_hid.c itself is included, so the hooks run as the game calls them; the host services around it are stubbed below. Expected values are hand-computed.
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++#include "../hle_hid.c"
++
++// ---- stubs for what the rest of the host provides ----
++static uint64_t g_now = 1000000000ull, g_guest = 5000000000ull; static int g_opmode = 1;
++uint64_t now_ns(void) { return g_now; }
++uint64_t guest_ns(void) { return g_guest; }
++int dm_opmode(void) { return g_opmode; }
++uint64_t dm_guest_frame(void) { return 0; }
++void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; }
++void hle_signal_system_event(void *g) { (void)g; }
++int touch_fill_n(void *out, int max, uint64_t now) { (void)out; (void)max; (void)now; return 0; }
++void dm_touch_set(const dm_touch *t, int n) { (void)t; (void)n; }
++uint64_t g_t0_ns;
++
++static int fails, cases;
++#define CHECK(what, cond) do { cases++; if (cond) printf("✓ %s\n", what); else { fails++; printf("✗ %s (line %d)\n", what, __LINE__); } } while (0)
++static int near(float a, float b) { return fabsf(a - b) < 2e-4f; }
++
++// ---- the rumble sink records every call ----
++static struct { int dev; float v[4]; } g_calls[64]; static int g_ncalls;
++static void sink(int dev, float al, float fl, float ah, float fh) { if (g_ncalls < 64) { g_calls[g_ncalls].dev = dev; g_calls[g_ncalls].v[0] = al; g_calls[g_ncalls].v[1] = fl; g_calls[g_ncalls].v[2] = ah; g_calls[g_ncalls].v[3] = fh; } g_ncalls++; }
++static void send(uint32_t h, float al, float fl, float ah, float fh) { float v[4] = {al, fl, ah, fh}; h_hid_SendVib(&h, v); }
++
++int main(void) {
++    const uint32_t id0 = 0, id_hh = 0x20;
++    uint32_t hs[4];
++
++    // ---- no sink attached: as before, no vibration device ----
++    CHECK("no sink: vibration not permitted", h_hid_VibPermit() == 0);
++    CHECK("no sink: 0 handles", h_hid_VibHandles(hs, 2, &id0, STYLE_FULLKEY) == 0);
++    send(0x00000000, 1, 160, 1, 320); CHECK("no sink: sending is harmless", g_ncalls == 0);
++
++    // ---- attached, docked (npad 0, full-key style, bit 0) ----
++    dm_rumble_attach(sink);
++    CHECK("sink: vibration permitted", h_hid_VibPermit() == 1);
++    CHECK("full-key: 2 devices", h_hid_VibHandles(hs, 4, &id0, STYLE_FULLKEY) == 2);
++    CHECK("handles: bit 0 | npad 0 << 8 | device << 16", hs[0] == 0x00000000u && hs[1] == 0x00010000u);
++    CHECK("count 1 asked: 1 handle", h_hid_VibHandles(hs, 1, &id0, STYLE_FULLKEY) == 1 && hs[0] == 0);
++    CHECK("count 0 asked: 0 handles", h_hid_VibHandles(hs, 0, &id0, STYLE_FULLKEY) == 0);
++    CHECK("a style set that includes the connected one: 2 devices", h_hid_VibHandles(hs, 4, &id0, STYLE_FULLKEY | STYLE_JOYDUAL | STYLE_HANDHELD) == 2 && hs[0] == 0);
++    CHECK("joy-con styles only: no device (the controller is full-key)", h_hid_VibHandles(hs, 4, &id0, STYLE_JOYLEFT | STYLE_JOYRIGHT) == 0);
++    const uint32_t id1 = 1;
++    CHECK("another npad id: no device", h_hid_VibHandles(hs, 4, &id1, STYLE_FULLKEY) == 0);
++
++    uint32_t info[2];
++    h_hid_VibInfo(info, &(uint32_t){0x00000000}); CHECK("info left: LRA, position 1", info[0] == 1 && info[1] == 1);
++    h_hid_VibInfo(info, &(uint32_t){0x00010000}); CHECK("info right: LRA, position 2", info[0] == 1 && info[1] == 2);
++    h_hid_VibInfo(info, &(uint32_t){0x00020000}); CHECK("info device 2: none", info[0] == 0 && info[1] == 0);
++    h_hid_VibInfo(info, &(uint32_t){0x00000100}); CHECK("info other npad: none", info[0] == 0 && info[1] == 0);
++    h_hid_VibInfo(info, &(uint32_t){0x00000005}); CHECK("info style bit not connected: none", info[0] == 0 && info[1] == 0);
++
++    // ---- values ----
++    send(0x00000000, 0.5f, 160, 0.25f, 320);
++    CHECK("first value reaches the sink: left", g_ncalls == 1 && g_calls[0].dev == 0 && near(g_calls[0].v[0], 0.5f) && near(g_calls[0].v[1], 160) && near(g_calls[0].v[2], 0.25f) && near(g_calls[0].v[3], 320));
++    send(0x00000000, 0.5f, 160, 0.25f, 320); CHECK("the same value again is not forwarded", g_ncalls == 1);
++    send(0x00010000, 0.5f, 160, 0.25f, 320); CHECK("the same value on the other device is forwarded (right)", g_ncalls == 2 && g_calls[1].dev == 1);
++    send(0x00000000, 0.5f, 161, 0.25f, 320); CHECK("a changed frequency is forwarded", g_ncalls == 3 && near(g_calls[2].v[1], 161));
++    send(0x00000000, 3.f, 5000.f, -1.f, 10.f);
++    CHECK("clamped: amplitude 3 → 1, 5000 Hz → 1252; amplitude -1 → 0 with frequency 0",
++          g_ncalls == 4 && near(g_calls[3].v[0], 1) && near(g_calls[3].v[1], 1252) && near(g_calls[3].v[2], 0) && near(g_calls[3].v[3], 0));
++    send(0x00000000, NAN, NAN, 0.5f, NAN);
++    CHECK("NaN: amplitude 0 (frequency 0); a sounding band with NaN frequency → 40 Hz",
++          g_ncalls == 5 && near(g_calls[4].v[0], 0) && near(g_calls[4].v[1], 0) && near(g_calls[4].v[2], 0.5f) && near(g_calls[4].v[3], 40));
++    send(0x00000000, 0.f, 999.f, 0.f, 999.f);
++    CHECK("silence: all zeros whatever the frequencies", g_ncalls == 6 && g_calls[5].v[0] == 0 && g_calls[5].v[1] == 0 && g_calls[5].v[2] == 0 && g_calls[5].v[3] == 0);
++    send(0x00000000, 0.f, 160.f, 0.f, 320.f); CHECK("silence again (other frequencies): not forwarded", g_ncalls == 6);
++    send(0x00020000, 1, 160, 1, 320); send(0x00000100, 1, 160, 1, 320); send(0x00000007, 1, 160, 1, 320);
++    CHECK("bad handles (device 2, other npad, style bit 7) are ignored", g_ncalls == 6);
++
++    // actual value: right still holds {0.5, 160, 0.25, 320}; left is silent: default frequencies
++    float act[4];
++    h_hid_VibActual(act, &(uint32_t){0x00010000}); CHECK("actual (right): what it last got", near(act[0], 0.5f) && near(act[1], 160) && near(act[2], 0.25f) && near(act[3], 320));
++    h_hid_VibActual(act, &(uint32_t){0x00000000}); CHECK("actual (left, silent): 0 / 160 / 0 / 320", near(act[0], 0) && near(act[1], 160) && near(act[2], 0) && near(act[3], 320));
++    h_hid_VibActual(act, &(uint32_t){0x00020000}); CHECK("actual (bad handle): silence", near(act[0], 0) && near(act[2], 0));
++
++    // batch forms: two values, left then right
++    g_ncalls = 0;
++    uint32_t bh[2] = {0x00000000, 0x00010000}; float bv[8] = {0.1f, 100, 0.2f, 200, 0.3f, 300, 0.4f, 400};
++    CHECK("detail batch returns success", h_hid_SendVibs(bh, bv, 2) == 0);
++    CHECK("detail batch: left then right", g_ncalls == 2 && g_calls[0].dev == 0 && near(g_calls[0].v[0], 0.1f) && near(g_calls[0].v[3], 200) && g_calls[1].dev == 1 && near(g_calls[1].v[0], 0.3f) && near(g_calls[1].v[3], 400));
++    g_ncalls = 0; float bv2[8] = {0.6f, 100, 0.2f, 200, 0.7f, 300, 0.4f, 400};
++    CHECK("public batch returns success", h_hid_SendVibsPub(bh, bv2, 2) == 0 && g_ncalls == 2 && near(g_calls[0].v[0], 0.6f) && near(g_calls[1].v[0], 0.7f));
++
++    // re-attach resets the memory: silence first, so a repeat of the old value reaches the sink again
++    g_ncalls = 0; dm_rumble_attach(sink); send(0x00000000, 0.6f, 100, 0.2f, 200);
++    CHECK("re-attach: the old value reaches the sink again", g_ncalls == 1);
++
++    // handheld: npad 0x20, style bit 1
++    g_opmode = 0; g_ncalls = 0;
++    CHECK("handheld: 2 devices on npad 0x20 with style bit 1", h_hid_VibHandles(hs, 4, &id_hh, STYLE_HANDHELD) == 2 && hs[0] == (1u | 0x20u << 8) && hs[1] == (1u | 0x20u << 8 | 1u << 16));
++    send(hs[1], 0.9f, 200, 0, 0); CHECK("handheld: a value reaches the right device", g_ncalls == 1 && g_calls[0].dev == 1 && near(g_calls[0].v[0], 0.9f));
++    CHECK("handheld: the full-key id is no longer connected", h_hid_VibHandles(hs, 4, &id0, STYLE_FULLKEY) == 0);
++    g_opmode = 1;
++
++    // detach
++    g_ncalls = 0; dm_rumble_attach(NULL);
++    CHECK("detached: not permitted, no handles, nothing forwarded", h_hid_VibPermit() == 0 && h_hid_VibHandles(hs, 4, &id0, STYLE_FULLKEY) == 0 && (send(0, 1, 160, 1, 320), g_ncalls == 0));
++
++    // ---- six-axis: no controller motion = the old synthetic sensor, byte for byte ----
++    SixAxisState st[3]; uint32_t six = 0;   // full-key, npad 0, device 0
++    CHECK("six-axis handle reads connected", h_hid_SixStates(st, 3, &six) == 3);
++    int rest_ok = 1;
++    for (int i = 0; i < 3; i++) {
++        rest_ok &= st[i].delta_ns == 5000000 && st[i].attributes == 1 && st[i].sampling == (int64_t)(g_guest / 5000000) - i;
++        rest_ok &= st[i].acc[0] == 0 && st[i].acc[1] == 0 && st[i].acc[2] == -1 && st[i].gyro[0] == 0 && st[i].gyro[1] == 0 && st[i].gyro[2] == 0;
++        rest_ok &= st[i].angle[0] == 0 && st[i].angle[1] == 0 && st[i].angle[2] == 0;
++        rest_ok &= st[i].dir[0] == 1 && st[i].dir[1] == 0 && st[i].dir[2] == 0 && st[i].dir[3] == 0 && st[i].dir[4] == 1 && st[i].dir[5] == 0 && st[i].dir[6] == 0 && st[i].dir[7] == 0 && st[i].dir[8] == 1;
++    }
++    CHECK("no motion: lies flat (0,0,-1), no rotation, identity direction, 5 ms apart, newest first", rest_ok);
++    CHECK("no motion: at rest", h_hid_SixRest(&six) == 1);
++
++    // ---- a controller reports motion ----
++    const float flat[3] = {0, 0, -1}, still[3] = {0, 0, 0};
++    dm_pad_motion_set(flat, still);   // t = 1.0 s: first sample, dt 0
++    h_hid_SixStates(st, 1, &six);
++    CHECK("first sample: acceleration passes through, identity direction, zero angle", near(st[0].acc[2], -1) && st[0].gyro[2] == 0 && st[0].angle[2] == 0 && near(st[0].dir[0], 1) && near(st[0].dir[4], 1) && near(st[0].dir[8], 1));
++    CHECK("controller at rest: at rest", h_hid_SixRest(&six) == 1);
++
++    // half a turn about z at 1 revolution / s (2π rad/s): five samples 0.1 s apart → 0.5 rev, the x axis ends at (-1, 0, 0), the y axis at (0, -1, 0)
++    const float yaw[3] = {0, 0, (float)(2 * M_PI)};
++    for (int k = 0; k < 5; k++) { g_now += 100000000ull; dm_pad_motion_set(flat, yaw); }
++    h_hid_SixStates(st, 1, &six);
++    CHECK("half a turn: angle z = 0.5 revolutions", near(st[0].angle[2], 0.5f) && near(st[0].angle[0], 0) && near(st[0].angle[1], 0));
++    CHECK("half a turn: angular velocity z = 1 revolution / s", near(st[0].gyro[2], 1.f) && near(st[0].gyro[0], 0) && near(st[0].gyro[1], 0));
++    CHECK("half a turn: x axis (-1,0,0), y axis (0,-1,0), z axis (0,0,1)", near(st[0].dir[0], -1) && near(st[0].dir[1], 0) && near(st[0].dir[2], 0) && near(st[0].dir[3], 0) && near(st[0].dir[4], -1) && near(st[0].dir[5], 0) && near(st[0].dir[6], 0) && near(st[0].dir[7], 0) && near(st[0].dir[8], 1));
++    CHECK("turning fast: not at rest", h_hid_SixRest(&six) == 0);
++    int64_t newest = st[0].sampling; SixAxisState h3[3]; h_hid_SixStates(h3, 3, &six);
++    CHECK("history: every entry carries the newest reading, sampling numbers count down", h3[2].sampling == h3[0].sampling - 2 && near(h3[2].angle[2], 0.5f) && newest == h3[0].sampling);
++
++    // a quarter turn about x, then a quarter turn about the controller's own y (which by then points along world z)
++    g_now += 1000000000ull; dm_pad_motion_set(flat, still);   // a gap over 0.5 s starts again from the identity
++    h_hid_SixStates(st, 1, &six); CHECK("after a long gap the orientation starts again at the identity", near(st[0].dir[0], 1) && near(st[0].dir[4], 1) && near(st[0].angle[2], 0));
++    const float qx[3] = {(float)(5 * M_PI), 0, 0}, qy[3] = {0, (float)(5 * M_PI), 0};   // 5π rad/s for 0.1 s = a quarter turn
++    g_now += 100000000ull; dm_pad_motion_set(flat, qx);
++    g_now += 100000000ull; dm_pad_motion_set(flat, qy);
++    h_hid_SixStates(st, 1, &six);
++    // after the x quarter turn the axes are x=(1,0,0) y=(0,0,1) z=(0,-1,0); the y rate then turns about world z: x → (0,1,0), y stays (0,0,1), z → (1,0,0)
++    CHECK("quarter turn about x then about the carried y: rows (0,1,0) (0,0,1) (1,0,0)",
++          near(st[0].dir[0], 0) && near(st[0].dir[1], 1) && near(st[0].dir[2], 0) && near(st[0].dir[3], 0) && near(st[0].dir[4], 0) && near(st[0].dir[5], 1) && near(st[0].dir[6], 1) && near(st[0].dir[7], 0) && near(st[0].dir[8], 0));
++    CHECK("angles per axis: 0.25 revolutions about x and y", near(st[0].angle[0], 0.25f) && near(st[0].angle[1], 0.25f) && near(st[0].angle[2], 0));
++    float det = st[0].dir[0] * (st[0].dir[4] * st[0].dir[8] - st[0].dir[5] * st[0].dir[7]) - st[0].dir[1] * (st[0].dir[3] * st[0].dir[8] - st[0].dir[5] * st[0].dir[6]) + st[0].dir[2] * (st[0].dir[3] * st[0].dir[7] - st[0].dir[4] * st[0].dir[6]);
++    CHECK("the direction stays a rotation (determinant 1)", near(det, 1.f));
++
++    // many small steps keep the rows orthonormal (no drift): 2000 samples 5 ms apart with a tumbling rate
++    for (int k = 0; k < 2000; k++) { g_now += 5000000ull; float w[3] = {3.1f, -2.2f, 1.7f}; dm_pad_motion_set(flat, w); }
++    h_hid_SixStates(st, 1, &six);
++    const float *d = st[0].dir; float n0 = d[0]*d[0]+d[1]*d[1]+d[2]*d[2], n1 = d[3]*d[3]+d[4]*d[4]+d[5]*d[5], n2 = d[6]*d[6]+d[7]*d[7]+d[8]*d[8], p01 = d[0]*d[3]+d[1]*d[4]+d[2]*d[5];
++    CHECK("2000 small steps: rows unit length and perpendicular", near(n0, 1) && near(n1, 1) && near(n2, 1) && near(p01, 0));
++
++    // staleness: 0.6 s without a sample → the synthetic sensor again
++    g_now += 600000000ull; h_hid_SixStates(st, 1, &six);
++    CHECK("0.6 s after the last sample: flat and still again", st[0].acc[2] == -1 && st[0].gyro[0] == 0 && st[0].dir[0] == 1 && h_hid_SixRest(&six) == 1);
++    dm_pad_motion_set(flat, still); dm_pad_motion_clear(); h_hid_SixStates(st, 1, &six);
++    CHECK("cleared: flat and still", st[0].acc[2] == -1 && st[0].angle[2] == 0);
++    float bad[3] = {NAN, INFINITY, 0.5f}; dm_pad_motion_set(bad, bad); h_hid_SixStates(st, 1, &six);
++    CHECK("non-finite input is read as 0", near(st[0].acc[0], 0) && near(st[0].acc[1], 0) && near(st[0].acc[2], 0.5f) && near(st[0].gyro[0], 0) && near(st[0].gyro[1], 0));
++    dm_pad_motion_clear();
++
++    // the phone-shake path (DM_BTN_SHAKE) is unchanged: at 40 ms into a shake the x acceleration is 3 sin(2π · 6 · 0.04)
++    dm_input_set(DM_BTN_SHAKE, 0, 0, 0, 0);   // the shake starts at the guest clock now
++    uint64_t t0 = g_guest; g_guest = t0 + 40000000ull; h_hid_SixStates(st, 1, &six);
++    float want = (float)(3.0 * sin(2 * M_PI * 6 * (double)((g_guest / 5000000) * 5000000 - t0) / 1e9));
++    CHECK("shake with no controller motion: x acceleration 3 sin(phase)", near(st[0].acc[0], want) && st[0].acc[2] == -1);
++    CHECK("shaking: not at rest", h_hid_SixRest(&six) == 0);
++    const float tilt[3] = {0.1f, 0.2f, -0.9f}; dm_pad_motion_set(tilt, still); h_hid_SixStates(st, 1, &six);
++    CHECK("shake on top of controller motion: swing added to its acceleration", near(st[0].acc[0], 0.1f + want) && near(st[0].acc[1], 0.2f) && near(st[0].acc[2], -0.9f));
++
++    printf("%d cases, %d failed\n", cases, fails);
++    return fails ? 1 : 0;
++}
+diff -ruN orig/nxnative-main/dm/host/tests/t_pad_core.c nx/nxnative-main/dm/host/tests/t_pad_core.c
+--- orig/nxnative-main/dm/host/tests/t_pad_core.c	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/host/tests/t_pad_core.c	2026-10-24 06:42:25.285674549 +0000
+@@ -0,0 +1,87 @@
++// Controller core unit test (dm/ios/Sources/dm_pad_core.c): face layouts, stick scaling, motion axis maps and the HD rumble mapping.
++// Expected values are written by hand from the rules in dm_pad_core.h, not computed by the code under test.
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++#include "../../ios/Sources/dm_pad_core.h"
++
++static int fails, cases;
++#define CHECK(what, cond) do { cases++; if (cond) printf("✓ %s\n", what); else { fails++; printf("✗ %s (line %d)\n", what, __LINE__); } } while (0)
++static int near(float a, float b) { return fabsf(a - b) < 1e-4f; }
++
++int main(void) {
++    const uint64_t A = 1, B = 2, X = 4, Y = 8;   // dm_input.h: DM_BTN_A..Y
++    // Xbox layout: bottom A, right B, left X, top Y
++    CHECK("xbox: bottom = A", dm_pad_face_buttons(DM_FACE_XBOX, 1, 0, 0, 0) == A);
++    CHECK("xbox: right = B", dm_pad_face_buttons(DM_FACE_XBOX, 0, 1, 0, 0) == B);
++    CHECK("xbox: left = X", dm_pad_face_buttons(DM_FACE_XBOX, 0, 0, 1, 0) == X);
++    CHECK("xbox: top = Y", dm_pad_face_buttons(DM_FACE_XBOX, 0, 0, 0, 1) == Y);
++    CHECK("xbox: all four", dm_pad_face_buttons(DM_FACE_XBOX, 1, 1, 1, 1) == (A | B | X | Y));
++    CHECK("xbox: none", dm_pad_face_buttons(DM_FACE_XBOX, 0, 0, 0, 0) == 0);
++    // Nintendo positions: bottom B, right A, left Y, top X
++    CHECK("nintendo: bottom = B", dm_pad_face_buttons(DM_FACE_NINTENDO, 1, 0, 0, 0) == B);
++    CHECK("nintendo: right = A", dm_pad_face_buttons(DM_FACE_NINTENDO, 0, 1, 0, 0) == A);
++    CHECK("nintendo: left = Y", dm_pad_face_buttons(DM_FACE_NINTENDO, 0, 0, 1, 0) == Y);
++    CHECK("nintendo: top = X", dm_pad_face_buttons(DM_FACE_NINTENDO, 0, 0, 0, 1) == X);
++    CHECK("nintendo: bottom + right = A + B", dm_pad_face_buttons(DM_FACE_NINTENDO, 1, 1, 0, 0) == (A | B));
++    CHECK("parse xbox", dm_pad_face_parse("xbox", DM_FACE_NINTENDO) == DM_FACE_XBOX);
++    CHECK("parse XBOX (case)", dm_pad_face_parse("XBOX", DM_FACE_NINTENDO) == DM_FACE_XBOX);
++    CHECK("parse nintendo", dm_pad_face_parse("nintendo", DM_FACE_XBOX) == DM_FACE_NINTENDO);
++    CHECK("parse switch", dm_pad_face_parse("switch", DM_FACE_XBOX) == DM_FACE_NINTENDO);
++    CHECK("parse position", dm_pad_face_parse("position", DM_FACE_XBOX) == DM_FACE_NINTENDO);
++    CHECK("parse junk keeps the default", dm_pad_face_parse("banana", DM_FACE_XBOX) == DM_FACE_XBOX && dm_pad_face_parse("banana", DM_FACE_NINTENDO) == DM_FACE_NINTENDO);
++    CHECK("parse NULL keeps the default", dm_pad_face_parse(NULL, DM_FACE_NINTENDO) == DM_FACE_NINTENDO);
++
++    // Sticks
++    CHECK("axis 1 → 32767", dm_pad_axis(1.f) == 32767);
++    CHECK("axis -1 → -32767", dm_pad_axis(-1.f) == -32767);
++    CHECK("axis 0", dm_pad_axis(0.f) == 0);
++    CHECK("axis 0.5 → 16384 (rounded)", dm_pad_axis(0.5f) == 16384);
++    CHECK("axis clamps above 1", dm_pad_axis(7.f) == 32767);
++    CHECK("axis clamps below -1", dm_pad_axis(-7.f) == -32767);
++    CHECK("axis NaN → 0", dm_pad_axis(NAN) == 0);
++
++    // Motion axis maps. Default "x,-y,-z": a controller flat face up feels (0, 0, +1) G in frame D and must read (0, 0, -1) in the Switch frame
++    float in[3] = {0, 0, 1}, out[3];
++    dm_axmap_apply(&DM_AXMAP_DEFAULT, in, out);
++    CHECK("default map: flat face up (0,0,+1) → (0,0,-1)", near(out[0], 0) && near(out[1], 0) && near(out[2], -1));
++    float in2[3] = {0.25f, 0.5f, 0.75f};
++    dm_axmap_apply(&DM_AXMAP_DEFAULT, in2, out);
++    CHECK("default map: (0.25, 0.5, 0.75) → (0.25, -0.5, -0.75)", near(out[0], 0.25f) && near(out[1], -0.5f) && near(out[2], -0.75f));
++    dm_axmap m;
++    CHECK("parse \"x,-y,-z\"", dm_axmap_parse("x,-y,-z", &m) && m.src[0] == 0 && m.src[1] == 1 && m.src[2] == 2 && m.sgn[0] == 1 && m.sgn[1] == -1 && m.sgn[2] == -1);
++    CHECK("parse \"y, x, -z\" (spaces, swap)", dm_axmap_parse("y, x, -z", &m) && m.src[0] == 1 && m.src[1] == 0 && m.src[2] == 2 && m.sgn[0] == 1 && m.sgn[1] == 1 && m.sgn[2] == -1);
++    dm_axmap_apply(&m, in2, out);
++    CHECK("swap map applies: (0.25, 0.5, 0.75) → (0.5, 0.25, -0.75)", near(out[0], 0.5f) && near(out[1], 0.25f) && near(out[2], -0.75f));
++    CHECK("parse \"+Z,-X,Y\" (case, plus)", dm_axmap_parse("+Z,-X,Y", &m) && m.src[0] == 2 && m.src[1] == 0 && m.src[2] == 1 && m.sgn[0] == 1 && m.sgn[1] == -1 && m.sgn[2] == 1);
++    dm_axmap keep = DM_AXMAP_DEFAULT; dm_axmap probe = keep;
++    CHECK("reject a repeated axis \"x,x,z\"", !dm_axmap_parse("x,x,z", &probe) && !memcmp(&probe, &keep, sizeof keep));
++    CHECK("reject two tokens \"x,y\"", !dm_axmap_parse("x,y", &probe));
++    CHECK("reject four tokens \"x,y,z,x\"", !dm_axmap_parse("x,y,z,x", &probe));
++    CHECK("reject an empty token \"x,,y,z\"", !dm_axmap_parse("x,,y,z", &probe));
++    CHECK("reject a trailing comma \"x,y,z,\"", !dm_axmap_parse("x,y,z,", &probe));
++    CHECK("reject junk \"x,y,w\"", !dm_axmap_parse("x,y,w", &probe));
++    CHECK("reject \"xy,z,x\"", !dm_axmap_parse("xy,z,x", &probe));
++    CHECK("reject double sign \"x,--y,z\"", !dm_axmap_parse("x,--y,z", &probe));
++    CHECK("reject NULL / empty", !dm_axmap_parse(NULL, &probe) && !dm_axmap_parse("", &probe));
++    float io[3] = {1, 2, 3}; dm_axmap_parse("z,y,-x", &m); dm_axmap_apply(&m, io, io);
++    CHECK("apply in place (z,y,-x on 1,2,3 → 3,2,-1)", near(io[0], 3) && near(io[1], 2) && near(io[2], -1));
++
++    // HD rumble. Frequency on a log scale over 40..1252 Hz: 40 → 0, 1252 → 1, the geometric middle sqrt(40*1252) = 223.783 Hz → 0.5
++    float i, s;
++    dm_hd_to_haptic(0.6f, 40.f, &i, &s);   CHECK("40 Hz: sharpness 0, intensity = amplitude", near(i, 0.6f) && near(s, 0.f));
++    dm_hd_to_haptic(1.f, 1252.f, &i, &s);  CHECK("1252 Hz: sharpness 1", near(i, 1.f) && near(s, 1.f));
++    dm_hd_to_haptic(1.f, sqrtf(40.f * 1252.f), &i, &s); CHECK("geometric middle: sharpness 0.5", near(s, 0.5f));
++    dm_hd_to_haptic(1.f, 10.f, &i, &s);    CHECK("below range clamps to 0", near(s, 0.f));
++    dm_hd_to_haptic(1.f, 5000.f, &i, &s);  CHECK("above range clamps to 1", near(s, 1.f));
++    dm_hd_to_haptic(2.f, 160.f, &i, &s);   CHECK("amplitude above 1 clamps", near(i, 1.f));
++    dm_hd_to_haptic(-1.f, 160.f, &i, &s);  CHECK("negative amplitude → 0", near(i, 0.f));
++    dm_hd_to_haptic(NAN, NAN, &i, &s);     CHECK("NaN → 0 / 0", near(i, 0.f) && near(s, 0.f));
++    dm_hd_to_haptic(0.5f, 160.f, &i, &s);  // log2(160/40) / log2(1252/40) = 2 / 4.97 = 0.4024
++    CHECK("160 Hz: sharpness 0.4024", near(s, 0.4024f) || fabsf(s - 0.4024f) < 2e-3f);
++    CHECK("u16: 0 → 0, 1 → 65535, 0.5 → 32768", dm_hd_to_u16(0.f) == 0 && dm_hd_to_u16(1.f) == 65535 && dm_hd_to_u16(0.5f) == 32768);
++    CHECK("u16: clamps and NaN", dm_hd_to_u16(3.f) == 65535 && dm_hd_to_u16(-3.f) == 0 && dm_hd_to_u16(NAN) == 0);
++
++    printf("%d cases, %d failed\n", cases, fails);
++    return fails ? 1 : 0;
++}
+diff -ruN orig/nxnative-main/dm/ios/Sources/DmController.m nx/nxnative-main/dm/ios/Sources/DmController.m
+--- orig/nxnative-main/dm/ios/Sources/DmController.m	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/DmController.m	2026-10-24 06:49:52.273355712 +0000
+@@ -0,0 +1,296 @@
++// Physical controllers: the GameController backend, shared settings, motion mapping, and HD rumble through Core Haptics (see dm_ctrl.h for the environment variables).
++//
++//   Buttons    GCExtendedGamepad, by position, turned into the game's A/B/X/Y by dm_pad_face_buttons (Xbox layout by default).
++//   Motion     GCMotion of the primary controller (a DualSense when there is one): gravity + user acceleration (or the total acceleration) and the rotation rate, brought to frame D and then to the Switch's
++//              (dm_ctrl_motion → dm_pad_motion_set). GameController reports the gravity direction, as CoreMotion does (flat, face up: z = -1); the sensor feels the opposite force, so it is negated.
++//   Rumble     The Switch's vibration value has two bands per side (a low and a high amplitude / frequency) and the game has a left and a right device. Each side of the controller (its left and right handle:
++//              on a DualSense the two voice-coil actuators) gets two layered continuous haptic events, one per band, each with its own intensity and sharpness (dm_hd_to_haptic); the haptic engine mixes them.
++//              A controller that only exposes one locality gets both sides mixed into one event (dm_hd_mix). iOS gives apps no access to a DualSense's speaker (it is not an audio output over Bluetooth, and
++//              GameController's haptics are actuator-only), so the speaker is not driven.
++#import <Foundation/Foundation.h>
++#import <GameController/GameController.h>
++#import <CoreHaptics/CoreHaptics.h>
++#include <math.h>
++#include <os/lock.h>
++#include <stdatomic.h>
++#include <string.h>
++#include "dm.h"
++#include "dm_input.h"
++#include "dm_ctrl.h"
++#include "dm_pad_core.h"
++
++// ======== shared settings and motion mapping ========
++static int g_face = DM_FACE_XBOX, g_motion_on = 1, g_rumble_on = 1, g_motion_log;
++static float g_gain = 1.f;
++static dm_axmap g_axmap;   // set in dm_ctrl_start
++int dm_ctrl_face_layout(void) { return g_face; }
++int dm_ctrl_motion_enabled(void) { return g_motion_on; }
++int dm_ctrl_rumble_enabled(void) { return g_rumble_on; }
++float dm_ctrl_rumble_gain(void) { return g_gain; }
++
++void dm_ctrl_motion(const float force_g[3], const float gyro_rps[3]) {
++    float a[3], w[3];
++    dm_axmap_apply(&g_axmap, force_g, a);
++    dm_axmap_apply(&g_axmap, gyro_rps, w);
++    dm_pad_motion_set(a, w);
++    if (g_motion_log) {   // twice a second: frame D in, Switch frame out
++        static _Atomic uint64_t last; uint64_t t = now_ns(), l = atomic_load(&last);
++        if (t - l > 500000000ull && atomic_compare_exchange_strong(&last, &l, t))
++            LOG("motion: in (frame D) acc %.3f %.3f %.3f G gyro %.3f %.3f %.3f rad/s  →  out (Switch) acc %.3f %.3f %.3f G gyro %.3f %.3f %.3f rad/s",
++                force_g[0], force_g[1], force_g[2], gyro_rps[0], gyro_rps[1], gyro_rps[2], a[0], a[1], a[2], w[0], w[1], w[2]);
++    }
++}
++void dm_ctrl_motion_off(void) { dm_pad_motion_clear(); }
++
++static float env_float(const char *name, float dflt, float lo, float hi) {
++    const char *s = getenv(name); if (!s || !*s) return dflt;
++    char *end; float v = strtof(s, &end);
++    if (end == s || *end || v != v) { LOG("%s=%s is not a number, using %g", name, s, dflt); return dflt; }
++    return v < lo ? lo : v > hi ? hi : v;
++}
++
++// ======== GameController backend ========
++static dm_ctrl_ops g_ops;
++static GCController *g_primary;           // the controller whose motion and haptics are used
++static dispatch_queue_t g_inq;            // controller callbacks run here, not on the main thread (input latency does not depend on UI work)
++
++static void gc_read(GCExtendedGamepad *g) {
++    uint64_t m = dm_pad_face_buttons(g_face, g.buttonA.isPressed, g.buttonB.isPressed, g.buttonX.isPressed, g.buttonY.isPressed);
++    if (g.leftShoulder.isPressed)  m |= DM_BTN_L;
++    if (g.rightShoulder.isPressed) m |= DM_BTN_R;
++    if (g.leftTrigger.isPressed)   m |= DM_BTN_ZL;
++    if (g.rightTrigger.isPressed)  m |= DM_BTN_ZR;
++    if (g.leftThumbstickButton.isPressed)  m |= DM_BTN_LS;
++    if (g.rightThumbstickButton.isPressed) m |= DM_BTN_RS;
++    if (g.dpad.up.isPressed)    m |= DM_BTN_UP;
++    if (g.dpad.down.isPressed)  m |= DM_BTN_DOWN;
++    if (g.dpad.left.isPressed)  m |= DM_BTN_LEFT;
++    if (g.dpad.right.isPressed) m |= DM_BTN_RIGHT;
++    if (g.buttonMenu.isPressed)    m |= DM_BTN_PLUS;
++    if (g.buttonOptions.isPressed) m |= DM_BTN_MINUS;
++    dm_ctrl_state s = {m, dm_pad_axis(g.leftThumbstick.xAxis.value), dm_pad_axis(g.leftThumbstick.yAxis.value),
++                          dm_pad_axis(g.rightThumbstick.xAxis.value), dm_pad_axis(g.rightThumbstick.yAxis.value)};
++    g_ops.state(&s);
++}
++
++// ---- HD rumble ----
++// One side of the controller: an engine and two layered players (band 0 = the Switch's low band, 1 = the high band)
++@interface DmMotor : NSObject {
++@public
++    CHHapticEngine *engine;
++    id<CHHapticAdvancedPatternPlayer> player[2];
++    float lastI[2], lastS[2];
++    uint64_t gen;   // counts calls; the idle stop only acts if nothing came since it was scheduled
++}
++@end
++@implementation DmMotor @end
++
++static dispatch_queue_t g_hq;                  // all Core Haptics work happens here
++static DmMotor *g_motor[2];                    // device 0 = left, 1 = right; both the same object on a controller with one locality (g_mixed)
++static BOOL g_mixed;
++static os_unfair_lock g_pend_lock = OS_UNFAIR_LOCK_INIT;
++static float g_pend[2][4]; static int g_sched[2];   // the newest value per device, and whether a block to apply it is queued
++
++static DmMotor *make_motor(GCDeviceHaptics *h, GCHapticsLocality loc) {
++    CHHapticEngine *e = [h createEngineWithLocality:loc];
++    if (!e) return nil;
++    e.playsHapticsOnly = YES;
++    e.autoShutdownEnabled = NO;
++    NSError *err = nil;
++    if (![e startAndReturnError:&err]) { LOG("haptics %s: engine did not start: %s", loc.UTF8String, err.localizedDescription.UTF8String); return nil; }
++    DmMotor *m = [DmMotor new]; m->engine = e;
++    __weak DmMotor *wm = m;
++    e.resetHandler = ^{   // the engine was reset by the system: restart it, the players are made again on demand
++        DmMotor *s = wm; if (!s) return;
++        NSError *er = nil; [s->engine startAndReturnError:&er];
++        s->player[0] = s->player[1] = nil; s->lastI[0] = s->lastI[1] = 0;
++    };
++    e.stoppedHandler = ^(CHHapticEngineStoppedReason r) {
++        DmMotor *s = wm; if (!s) return;
++        s->player[0] = s->player[1] = nil; s->lastI[0] = s->lastI[1] = 0;
++        NSError *er = nil; [s->engine startAndReturnError:&er];
++    };
++    return m;
++}
++
++static id<CHHapticAdvancedPatternPlayer> make_player(DmMotor *m) {
++    // a looped continuous event at full intensity and sharpness 0.5; the dynamic parameters set the real intensity (a multiplier) and sharpness (an offset)
++    CHHapticEvent *ev = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
++                                                      parameters:@[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f],
++                                                                   [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5f]]
++                                                    relativeTime:0 duration:30.0];
++    NSError *err = nil;
++    CHHapticPattern *p = [[CHHapticPattern alloc] initWithEvents:@[ev] parameters:@[] error:&err];
++    if (!p) return nil;
++    id<CHHapticAdvancedPatternPlayer> pl = [m->engine createAdvancedPlayerWithPattern:p error:&err];
++    if (!pl) return nil;
++    pl.loopEnabled = YES;
++    if (![pl startAtTime:CHHapticTimeImmediate error:&err]) return nil;
++    return pl;
++}
++
++static void set_band(DmMotor *m, int b, float amp, float freq) {
++    float i, s; dm_hd_to_haptic(fminf(amp * g_gain, 1.f), freq, &i, &s);
++    if (i < 0.01f) {   // silent: the player stays but gets intensity 0; the idle stop removes it later
++        if (m->player[b] && m->lastI[b] > 0.f) {
++            NSError *err = nil;
++            [m->player[b] sendParameters:@[[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:0.f relativeTime:0]] atTime:CHHapticTimeImmediate error:&err];
++        }
++        m->lastI[b] = 0.f; return;
++    }
++    if (!m->player[b]) { m->player[b] = make_player(m); m->lastI[b] = -1.f; if (!m->player[b]) return; }
++    if (fabsf(i - m->lastI[b]) < 0.015f && fabsf(s - m->lastS[b]) < 0.02f) return;
++    NSError *err = nil;
++    [m->player[b] sendParameters:@[[[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:i relativeTime:0],
++                                   [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticSharpnessControl value:s - 0.5f relativeTime:0]]
++                          atTime:CHHapticTimeImmediate error:&err];
++    m->lastI[b] = i; m->lastS[b] = s;
++}
++
++static void stop_motor_players(DmMotor *m) {
++    for (int b = 0; b < 2; b++) {
++        if (m->player[b]) { NSError *err = nil; [m->player[b] stopAtTime:CHHapticTimeImmediate error:&err]; m->player[b] = nil; }
++        m->lastI[b] = 0.f;
++    }
++}
++
++static void apply(int dev, const float v[4]) {   // on g_hq
++    DmMotor *m = g_motor[dev]; if (!m) return;
++    set_band(m, 0, v[0], v[1]);
++    set_band(m, 1, v[2], v[3]);
++    uint64_t gen = ++m->gen;
++    if (v[0] <= 0.f && v[2] <= 0.f) {   // silent: stop the players after a second of silence
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), g_hq, ^{ if (m->gen == gen) stop_motor_players(m); });
++    }
++}
++
++static void rumble_sink(int dev, float al, float fl, float ah, float fh) {   // called on the game's threads
++    if (dev < 0 || dev > 1) return;
++    os_unfair_lock_lock(&g_pend_lock);
++    g_pend[dev][0] = al; g_pend[dev][1] = fl; g_pend[dev][2] = ah; g_pend[dev][3] = fh;
++    int go = !g_sched[dev]; g_sched[dev] = 1;
++    os_unfair_lock_unlock(&g_pend_lock);
++    if (!go) return;   // a block for this device is already queued; it will read the newest value
++    dispatch_async(g_hq, ^{
++        float v[4];
++        os_unfair_lock_lock(&g_pend_lock);
++        g_sched[dev] = 0; memcpy(v, g_pend[dev], sizeof v);
++        os_unfair_lock_unlock(&g_pend_lock);
++        if (g_mixed) {   // both devices drive the one motor: per band, the stronger of the two devices' amplitudes with its frequency
++            float w[4]; os_unfair_lock_lock(&g_pend_lock); memcpy(w, g_pend[1 - dev], sizeof w); os_unfair_lock_unlock(&g_pend_lock);
++            float mx[4] = {fmaxf(v[0], w[0]), v[0] >= w[0] ? v[1] : w[1], fmaxf(v[2], w[2]), v[2] >= w[2] ? v[3] : w[3]};
++            apply(0, mx);
++            return;
++        }
++        apply(dev, v);
++    });
++}
++
++static void haptics_detach(void) {
++    dm_rumble_attach(NULL);
++    dispatch_async(g_hq, ^{
++        for (int d = 0; d < 2; d++) { if (g_motor[d]) { stop_motor_players(g_motor[d]); } }
++        for (int d = 0; d < 2; d++) { if (g_motor[d]) { [g_motor[d]->engine stopWithCompletionHandler:^(NSError *e) { }]; } g_motor[d] = nil; }
++        os_unfair_lock_lock(&g_pend_lock); memset(g_pend, 0, sizeof g_pend); g_sched[0] = g_sched[1] = 0; os_unfair_lock_unlock(&g_pend_lock);
++    });
++}
++
++static void haptics_attach(GCController *c) {
++    if (!g_rumble_on || !c.haptics) return;
++    GCDeviceHaptics *h = c.haptics;
++    NSSet<GCHapticsLocality> *loc = h.supportedLocalities;
++    DmMotor *l = nil, *r = nil; BOOL mixed = NO;
++    if ([loc containsObject:GCHapticsLocalityLeftHandle] && [loc containsObject:GCHapticsLocalityRightHandle]) {
++        l = make_motor(h, GCHapticsLocalityLeftHandle); r = make_motor(h, GCHapticsLocalityRightHandle);
++    }
++    if (!l || !r) {   // one locality only (or the pair failed): everything on one motor
++        l = r = nil;
++        GCHapticsLocality one = [loc containsObject:GCHapticsLocalityHandles] ? GCHapticsLocalityHandles : [loc containsObject:GCHapticsLocalityDefault] ? GCHapticsLocalityDefault : [loc containsObject:GCHapticsLocalityAll] ? GCHapticsLocalityAll : nil;
++        if (one) { l = make_motor(h, one); r = l; mixed = YES; }
++    }
++    if (!l || !r) { LOG("controller %s: no usable haptics", c.vendorName.UTF8String); return; }
++    dispatch_sync(g_hq, ^{ g_motor[0] = l; g_motor[1] = r; g_mixed = mixed; });
++    dm_rumble_attach(rumble_sink);
++    LOG("controller %s: HD rumble on (%s, gain %g)", c.vendorName.UTF8String, mixed ? "one motor, both sides mixed" : "left and right handles, two bands layered on each", g_gain);
++}
++
++// ---- motion ----
++static void motion_attach(GCController *c) {
++    if (!g_motion_on || !c.motion) return;
++    GCMotion *mo = c.motion;
++    if (mo.sensorsRequireManualActivation) mo.sensorsActive = YES;
++    mo.valueChangedHandler = ^(GCMotion *m) {
++        double a[3];
++        if (m.hasGravityAndUserAcceleration) { a[0] = m.gravity.x + m.userAcceleration.x; a[1] = m.gravity.y + m.userAcceleration.y; a[2] = m.gravity.z + m.userAcceleration.z; }
++        else { a[0] = m.acceleration.x; a[1] = m.acceleration.y; a[2] = m.acceleration.z; }
++        float f[3] = {(float)-a[0], (float)-a[1], (float)-a[2]};   // gravity direction → the force the sensor feels
++        float w[3] = {0, 0, 0};
++        if (m.hasRotationRate) { w[0] = (float)m.rotationRate.x; w[1] = (float)m.rotationRate.y; w[2] = (float)m.rotationRate.z; }
++        dm_ctrl_motion(f, w);
++    };
++    LOG("controller %s: motion on (%s)", c.vendorName.UTF8String, mo.hasRotationRate ? "gyro + accelerometer" : "accelerometer only");
++}
++static void motion_detach(GCController *c) {
++    if (c.motion) c.motion.valueChangedHandler = nil;
++    dm_ctrl_motion_off();
++}
++
++// ---- connect / disconnect ----
++static int score_of(GCController *c) {   // which controller gets the motion and the haptics: a DualSense first, then whatever has haptics, then motion
++    int s = 0;
++    if ([c.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) s += 4;
++    if (c.haptics) s += 2;
++    if (c.motion) s += 1;
++    return s;
++}
++static void gc_refresh(void) {   // main thread
++    int n = 0; GCController *best = nil; int bs = -1;
++    for (GCController *c in GCController.controllers) {
++        GCExtendedGamepad *g = c.extendedGamepad; if (!g) continue;
++        n++;
++        c.handlerQueue = g_inq;
++        g.valueChangedHandler = ^(GCExtendedGamepad *gp, GCControllerElement *el) { gc_read(gp); };
++        int sc = score_of(c); if (sc > bs) { bs = sc; best = c; }
++    }
++    if (best != g_primary) {
++        if (g_primary) { motion_detach(g_primary); haptics_detach(); }
++        g_primary = best;
++        if (best) {
++            if (best.playerIndex == GCControllerPlayerIndexUnset) best.playerIndex = GCControllerPlayerIndex1;
++            motion_attach(best); haptics_attach(best);
++        }
++    }
++    if (!n) { dm_ctrl_state z = {0, 0, 0, 0, 0}; g_ops.state(&z); }
++    g_ops.presence(n > 0);
++}
++
++static void gc_start(void) {
++    g_inq = dispatch_queue_create("dm.pad.input", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
++    g_hq = dispatch_queue_create("dm.pad.haptics", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
++    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
++    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { gc_refresh(); }];
++    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { gc_refresh(); }];
++    gc_refresh();   // controllers already connected at launch
++}
++
++// ======== entry ========
++void dm_ctrl_start(const dm_ctrl_ops *ops) {
++    g_ops = *ops;
++    g_face = dm_pad_face_parse(getenv("DM_PAD_FACE"), DM_FACE_XBOX);
++    const char *me = getenv("DM_MOTION"), *re = getenv("DM_RUMBLE");
++    g_motion_on = !(me && !strcmp(me, "0")); g_rumble_on = !(re && !strcmp(re, "0"));
++    g_gain = env_float("DM_RUMBLE_GAIN", 1.f, 0.f, 2.f);
++    g_motion_log = getenv("DM_MOTION_LOG") != NULL;
++    g_axmap = DM_AXMAP_DEFAULT;
++    const char *ax = getenv("DM_MOTION_AXES");
++    if (ax && *ax && !dm_axmap_parse(ax, &g_axmap)) LOG("DM_MOTION_AXES=%s is not three of x, y, z with optional signs (such as x,-y,-z); using the default", ax);
++    const char *be = getenv("DM_PAD_BACKEND"); if (!be || !*be) be = "auto";
++    int want_sdl = !strcmp(be, "sdl3");   // auto is GameController: it drives a DualSense's two actuators with layered bands, which SDL3's two-motor rumble cannot
++    if (!strcmp(be, "sdl3") && !dm_sdl3_available()) LOG("DM_PAD_BACKEND=sdl3, but this build has no SDL3 (see docs/development.md, "Controllers"); using GameController");
++    else if (strcmp(be, "auto") && strcmp(be, "gc") && strcmp(be, "sdl3")) LOG("DM_PAD_BACKEND=%s is not auto, gc or sdl3; using auto", be);
++    LOG("controllers: face keys %s layout, motion %s, rumble %s", g_face == DM_FACE_XBOX ? "Xbox" : "Nintendo", g_motion_on ? "on" : "off", g_rumble_on ? "on" : "off");
++    if (want_sdl && dm_sdl3_start(ops)) { LOG("controllers: SDL3 backend"); return; }
++    if (want_sdl) LOG("controllers: SDL3 backend did not start; using GameController");
++    LOG("controllers: GameController backend");
++    gc_start();
++}
+diff -ruN orig/nxnative-main/dm/ios/Sources/DmGamepad.m nx/nxnative-main/dm/ios/Sources/DmGamepad.m
+--- orig/nxnative-main/dm/ios/Sources/DmGamepad.m	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/DmGamepad.m	2026-10-24 06:46:33.271186891 +0000
+@@ -9,18 +9,28 @@
+ //     then in 3D the right stick for a touch in the right third.
+ //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
+ //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
+-//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
++//   Scale: the unit u follows the screen's size, not only its height (dm_pad_unit: the geometric mean of the two sides against an iPhone Pro Max in landscape, kept between 0.8 and 1.6 and small enough that the controls never meet);
++//     DM_PAD_SCALE (0.5 to 2, Documents/env.txt) scales it for your hands. The same unit places the frame-rate label (front_ios.m).
++//   Floating left stick: in a game that does not use the touch screen (docked op mode; DM_PAD_FLOAT=0/1 overrides), a touch landing in the left 40% of the screen on no control holds the left stick centred where it landed,
++//     the ring drawn there and its centre dragged along once the finger passes the ring radius, like the right stick; a touch near the home ring still holds the fixed ring. Games that read the touch screen keep the fixed ring only.
++//   A light tap (UIImpactFeedbackGenerator) answers every key that goes down; DM_PAD_HAPTICS=0 turns it off.
++//   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included)
++//     and are read by DmController.m (GameController, or DmSDL3Pad.c with SDL3): the face keys use the Xbox layout (A bottom, B right, X left, Y top) unless DM_PAD_FACE=nintendo; a DualSense also gives gyro and HD rumble (dm_ctrl.h).
+ //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
+ #import <UIKit/UIKit.h>
+-#import <GameController/GameController.h>
+ #import <CoreMotion/CoreMotion.h>
+ #import <CoreText/CoreText.h>
+ #include <pthread.h>
++#include <string.h>
+ #include "dm.h"
+ #include "dm_input.h"
++#include "dm_ctrl.h"
+ #include "front.h"
+ #include "game_profile.h"
+ 
++CGRect dm_game_rect(CGRect bounds);   // front_ios.m: where the Metal view sits in the screen
++int dm_opmode(void);                 // hle_os.c: 0 handheld, 1 docked
++
+ enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN, B_N };
+ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which control a touch holds; C_GAME: none, the touch goes to the game's touch screen (finger slot << 8)
+ 
+@@ -86,11 +96,29 @@
+     K_DPAD_GRAB = 1.3,                              // D-pad grab radius (times the outer edge)
+     K_RSTICK_R = 60,                                // right stick (not drawn): radius around its centre, the touch-down point
+     K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
+-    K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
++    K_CLICK_X = 102, K_CLICK_R = 17,                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
++    K_LSWIPE = 0.4,                                 // floating left stick area: this fraction of the screen width from the left edge (not in u)
++    K_U_REF = 633, K_U_MIN = 0.8, K_U_MAX = 1.6,    // u = sqrt(width · height) / K_U_REF (633 = an iPhone Pro Max in landscape, 932 × 430), kept in this range ...
++    K_NEED_H = 330, K_NEED_W = 480;                 // ... and at most height / K_NEED_H and width / K_NEED_W, the extent of the controls in u (top row to the stick's top edge; D-pad to the diamond), so they never meet
+ static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
++// The unit u of the layout for a screen of this size (see the header comment). Main thread
++CGFloat dm_pad_unit(CGSize s) {
++    CGFloat w = MAX(s.width, s.height), h = MIN(s.width, s.height);   // landscape: the long side is the width
++    if (w <= 0 || h <= 0) return 1;
++    static CGFloat user;
++    if (user == 0) { const char *e = getenv("DM_PAD_SCALE"); double v = e ? atof(e) : 0; user = v >= 0.5 && v <= 2.0 ? v : 1.0; }
++    CGFloat u = MIN(MAX(sqrt(w * h) / K_U_REF, K_U_MIN), K_U_MAX) * user;
++    return MIN(u, MIN(h / K_NEED_H, w / K_NEED_W));
++}
++static int float_stick_on(void) {   // the floating left stick: on for games that do not use the touch screen (docked), DM_PAD_FLOAT overrides
++    static int v = -1;
++    if (v < 0) { const char *e = getenv("DM_PAD_FLOAT"); v = e && *e ? atoi(e) != 0 : dm_opmode() == 1; }
++    return v;
++}
+ static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 1 = 3D, 0 = 2D
+ 
+ @interface DmGamepad : UIView
++- (void)setPhysical:(BOOL)any;   // a physical controller is connected (YES) / the last one left (NO)
+ @end
+ static __weak DmGamepad *g_view;
+ 
+@@ -98,6 +126,9 @@
+     NSMapTable<UITouch *, NSNumber *> *_owner;     // touch → control (with the key for C_BTN or the stick for C_STICK, << 8)
+     UITouch *_stick[2]; CGPoint _stickNow[2];      // the touch holding each stick and where it is now (0 left, 1 right)
+     CGPoint _rCentre;                              // the right stick's centre: where its touch landed, dragged along past K_RSTICK_R
++    CGPoint _lCentre; BOOL _lFloat;                // the left stick's centre while it floats (its touch landed away from the ring), and whether the held left stick floats
++    UIImpactFeedbackGenerator *_tick;              // the tap that answers a key going down (nil: off)
++    uint64_t _heldBits;                            // keys held at the last recompute
+     uint64_t _faceBits, _dpadBits, _btnBits;
+     NSMapTable<UITouch *, NSNumber *> *_faceOf;    // which keys each touch on the diamond currently holds
+     CAShapeLayer *_key[B_N]; CATextLayer *_label[B_N];   // one layer per key
+@@ -148,10 +179,8 @@
+         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
+         _full = saved ? saved.boolValue : DM_GAME_PAD_FULL;
+         [self applyLayout];
+-        NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+-        [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidConnectNotification object:nil];
+-        [nc addObserver:self selector:@selector(padsChanged) name:GCControllerDidDisconnectNotification object:nil];
+-        [self padsChanged];
++        const char *hp = getenv("DM_PAD_HAPTICS");
++        if (!(hp && !strcmp(hp, "0"))) { _tick = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; [_tick prepare]; }
+         motion_start();
+     }
+     return self;
+@@ -173,7 +202,7 @@
+ // ---- Layout (points; computed inside the safe area) ----
+ - (CGRect)safe { return UIEdgeInsetsInsetRect(self.bounds, self.safeAreaInsets); }
+ - (CGRect)corner { UIEdgeInsets i = self.safeAreaInsets; i.left *= K_CORNER_IN; i.right *= K_CORNER_IN; return UIEdgeInsetsInsetRect(self.bounds, i); }   // the rectangle the bottom-corner controls use
+-- (CGFloat)u { return MIN(self.bounds.size.height / 430.0, 1.3); }   // 1 = 430 points tall (iPhone Pro Max landscape)
++- (CGFloat)u { return dm_pad_unit(self.bounds.size); }   // 1 = an iPhone Pro Max in landscape; grows with bigger screens (dm_pad_unit)
+ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPointMake(right ? CGRectGetMaxX(s) - dx : CGRectGetMinX(s) + dx, y); }
+ - (CGPoint)faceCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 1, K_FACE_X * u, CGRectGetMaxY(s) - K_PAD_Y * u); }
+ - (CGFloat)faceGap { return K_FACE_GAP * self.u; }
+@@ -181,8 +210,9 @@
+ - (CGPoint)facePos:(int)b { CGPoint c = self.faceCenter; CGFloat g = self.faceGap;
+     switch (b) { case B_A: return CGPointMake(c.x + g, c.y); case B_B: return CGPointMake(c.x, c.y + g); case B_X: return CGPointMake(c.x, c.y - g); default: return CGPointMake(c.x - g, c.y); } }
+ - (CGPoint)stickHome { CGRect s = self.corner; return side(s, 0, K_STICK_X * self.u, CGRectGetMaxY(s) - K_PAD_Y * self.u); }   // the left stick's ring centre
+-- (CGPoint)stickCentre:(int)i { return i ? _rCentre : self.stickHome; }
++- (CGPoint)stickCentre:(int)i { return i ? _rCentre : (_lFloat && _stick[0] ? _lCentre : self.stickHome); }
+ - (CGFloat)stickR:(int)i { return (i ? K_RSTICK_R : K_STICK_R) * self.u; }
++- (BOOL)inLeftArea:(CGPoint)p { return p.x <= self.bounds.size.width * K_LSWIPE; }
+ - (BOOL)inRightArea:(CGPoint)p { CGRect b = self.bounds; return p.x >= CGRectGetMaxX(b) - b.size.width * K_RSWIPE; }
+ - (CGPoint)dpadCenter { CGRect s = self.corner; CGFloat u = self.u; return side(s, 0, K_LOW_X * u, CGRectGetMaxY(s) - K_LOW_Y * u); }
+ - (CGFloat)dpadR { return K_DPAD_R * self.u; }
+@@ -246,6 +276,9 @@
+         CGFloat m = fmin((d - dz) / (R * K_FULL - dz), 1) / d;   // outside the dead zone: 0 rising to full at the full-tilt radius
+         ax[i * 2] = (int32_t)lrint(o.x * m * 32767); ax[i * 2 + 1] = (int32_t)lrint(-o.y * m * 32767);   // host: up is positive; rounded so full tilt is exactly 32767
+     }
++    uint64_t down = face | dpad | btn;
++    if (_tick && (down & ~_heldBits)) { [_tick impactOccurred]; [_tick prepare]; }   // a key went down (also one slid onto)
++    _heldBits = down;
+     BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits || swap != _swapHeld;
+     _faceBits = face; _dpadBits = dpad; _btnBits = btn; _swapHeld = swap;
+     pthread_mutex_lock(&g_mu);
+@@ -256,13 +289,14 @@
+     if (changed || stick || _stickShown) [self refresh];   // also refresh on the stick release so the knob returns to the centre
+     _stickShown = stick;
+ }
+-// Touches no control takes (all of them while a physical controller is connected) go to the game's touch screen, normalized on the 16:9 picture that front_ios.m
+-// centres in the screen: Super Mario Galaxy's pointer in handheld mode (profile op_mode). The host reports them only in handheld mode, as on the Switch (hle_hid.c touch_read)
++// Touches no control takes (all of them while a physical controller is connected) go to the game's touch screen, normalized on the picture: front_ios.m centres a 1.43:1 view in the screen
++// and the Metal present keeps the game's picture aspect (dm_picture_aspect, 16:9 for the Switch's output) centred inside that view: Super Mario Galaxy's pointer in handheld mode (profile op_mode). The host reports them only in handheld mode, as on the Switch (hle_hid.c touch_read)
+ - (void)pushGame {
+-    CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
++    CGRect b = self.bounds; if (b.size.width <= 0 || b.size.height <= 0) return;
++    CGRect gr = dm_game_rect(b); CGFloat w = gr.size.width, h = gr.size.height; double ar = dm_picture_aspect();
+     if (w <= 0 || h <= 0) return;
+-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+-    CGFloat x0 = (b.size.width - w) / 2, y0 = (b.size.height - h) / 2;
++    if (w / h > ar) w = h * ar; else h = w / ar;
++    CGFloat x0 = gr.origin.x + (gr.size.width - w) / 2, y0 = gr.origin.y + (gr.size.height - h) / 2;
+     dm_touch t[16]; int n = 0;
+     for (int i = 0; i < 16; i++) if (_game[i]) {
+         CGPoint p = [_game[i] locationInView:self];
+@@ -285,8 +319,9 @@
+         CGFloat best = 1; int kind = C_NONE, idx = 0;
+         CGFloat f = dist(p, self.faceCenter) / (self.faceGap + self.faceR * 1.6); if (f <= best) { best = f; kind = C_FACE; }
+         if (_full) { CGFloat d = dist(p, self.dpadCenter) / (self.dpadR * K_DPAD_GRAB); if (d < best) { best = d; kind = C_DPAD; } }
+-        if (!_stick[0]) { CGFloat s = dist(p, self.stickHome) / ([self stickR:0] * K_STICK_GRAB); if (s < best) { best = s; kind = C_STICK; } }
++        if (!_stick[0]) { CGFloat s = dist(p, self.stickHome) / ([self stickR:0] * K_STICK_GRAB); if (s < best) { best = s; kind = C_STICK; _lFloat = NO; } }   // the fixed ring
+         if (kind == C_NONE && _full && !_stick[1] && [self inRightArea:p]) { kind = C_STICK; idx = 1; _rCentre = p; }   // the right stick: centred where the touch lands
++        if (kind == C_NONE && !_stick[0] && float_stick_on() && [self inLeftArea:p]) { kind = C_STICK; idx = 0; _lFloat = YES; _lCentre = p; }   // the left stick floats to where the touch lands
+         if (kind == C_FACE) { [_owner setObject:@(C_FACE) forKey:t]; [_faceOf setObject:@([self faceAt:p]) forKey:t]; }
+         else if (kind == C_DPAD) [_owner setObject:@(C_DPAD) forKey:t];
+         else if (kind == C_STICK) { [_owner setObject:@(C_STICK | (uint64_t)idx << 8) forKey:t]; _stick[idx] = t; _stickNow[idx] = p; }
+@@ -300,9 +335,10 @@
+     for (UITouch *t in ts) {
+         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
+         if (c == C_FACE) [_faceOf setObject:@([self faceAt:p]) forKey:t];
+-        else if (c == C_STICK) { _stickNow[v >> 8] = p;
+-            if ((v >> 8) == 1) { CGFloat d = dist(p, _rCentre), R = [self stickR:1];   // the right stick's centre follows a finger past its radius, so turning back responds at once
+-                if (d > R) _rCentre = CGPointMake(p.x - (p.x - _rCentre.x) * R / d, p.y - (p.y - _rCentre.y) * R / d); } }
++        else if (c == C_STICK) { int si = (int)(v >> 8); _stickNow[si] = p;
++            if (si == 1 || _lFloat) {   // a floating stick's centre (the right one always, the left one when it floated) follows a finger past its radius, so turning back responds at once
++                CGPoint *ce = si ? &_rCentre : &_lCentre; CGFloat d = dist(p, *ce), R = [self stickR:si];
++                if (d > R) *ce = CGPointMake(p.x - (p.x - ce->x) * R / d, p.y - (p.y - ce->y) * R / d); } }
+         else if (c == C_GAME) game = YES;
+     }
+     if (game) [self pushGame];
+@@ -374,7 +410,7 @@
+     static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
+     for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
+     CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
+-    setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
++    CGFloat rr = [self stickR:0]; _ring.bounds = CGRectMake(0, 0, 2 * rr, 2 * rr); setPath(_ring, circlePath(CGPointMake(rr, rr), rr));   // placed by refresh: it follows a floating stick
+     CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
+     setPath(_knob, circlePath(CGPointMake(k, k), k));
+     CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+@@ -389,40 +425,34 @@
+     for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
+         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
+     _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+-    CGPoint h = self.stickHome, o = [self knobOffset:0];
++    CGPoint h = [self stickCentre:0], o = [self knobOffset:0];
++    _ring.position = h;
+     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : k_idle).CGColor;
+     [CATransaction commit];
+ }
+ 
+ // ---- Physical controllers ----
+-static int32_t axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * 32767); }
+-static void read_pad(GCExtendedGamepad *g) {
+-    uint64_t m = 0;
+-    #define K(btn, bit) if (btn.isPressed) m |= 1ull << bit
+-    K(g.buttonB, B_A); K(g.buttonA, B_B); K(g.buttonY, B_X); K(g.buttonX, B_Y);   // by position: right A, bottom B, top X, left Y
+-    K(g.leftShoulder, B_L); K(g.rightShoulder, B_R); K(g.leftTrigger, B_ZL); K(g.rightTrigger, B_ZR);
+-    K(g.buttonMenu, B_PLUS); if (g.buttonOptions) K(g.buttonOptions, B_MINUS);
+-    if (g.leftThumbstickButton) K(g.leftThumbstickButton, B_LS); if (g.rightThumbstickButton) K(g.rightThumbstickButton, B_RS);
+-    K(g.dpad.left, B_LEFT); K(g.dpad.up, B_UP); K(g.dpad.right, B_RIGHT); K(g.dpad.down, B_DOWN);
+-    #undef K
++// DmController.m (GameController) or DmSDL3Pad.c (SDL3) read them and report here (dm_ctrl.h); any thread
++static void pad_state(const dm_ctrl_state *s) {
+     pthread_mutex_lock(&g_mu);
+-    g_pad_btn = m; g_pad_lx = axis(g.leftThumbstick.xAxis.value); g_pad_ly = axis(g.leftThumbstick.yAxis.value);
+-    g_pad_rx = axis(g.rightThumbstick.xAxis.value); g_pad_ry = axis(g.rightThumbstick.yAxis.value);
++    g_pad_btn = s->buttons; g_pad_lx = s->lx; g_pad_ly = s->ly; g_pad_rx = s->rx; g_pad_ry = s->ry;
+     pthread_mutex_unlock(&g_mu);
+     publish();
+ }
+-- (void)padsChanged {
+-    BOOL any = NO;
+-    for (GCController *c in GCController.controllers) if (c.extendedGamepad) {
+-        any = YES; c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; read_pad(g); };
+-        read_pad(c.extendedGamepad);
+-    }
+-    if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
+-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
++static void pad_presence(int any) {
++    dispatch_async(dispatch_get_main_queue(), ^{ [g_view setPhysical:any != 0]; });
++}
++- (void)setPhysical:(BOOL)any {   // a physical controller is connected / the last one left: the virtual gamepad hides / comes back, every touch is released
++    _padOff = any; _controls.hidden = any; [self reset];
+ }
+ @end
+ 
+-UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
++UIView *dm_gamepad_view(CGRect frame) {
++    DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v;
++    static const dm_ctrl_ops ops = {pad_state, pad_presence};
++    dm_ctrl_start(&ops);   // after g_view is set: the presence callback reaches it on the main queue
++    return v;
++}
+ void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
+     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
+     pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_shake_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();
+diff -ruN orig/nxnative-main/dm/ios/Sources/DmSDL3Pad.c nx/nxnative-main/dm/ios/Sources/DmSDL3Pad.c
+--- orig/nxnative-main/dm/ios/Sources/DmSDL3Pad.c	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/DmSDL3Pad.c	2026-10-24 06:49:52.276463165 +0000
+@@ -0,0 +1,169 @@
++// SDL3 gamepad backend (opt-in: DM_PAD_BACKEND=sdl3, and the app built with SDL3, see docs/development.md). Without DM_HAVE_SDL3 this file is two stubs.
++//
++// A thread polls SDL's gamepad state every 2 ms and reports what changed through dm_ctrl_ops, as DmController.m does for GameController:
++//   Buttons  by position (SOUTH / EAST / WEST / NORTH) through dm_pad_face_buttons, so the face layout setting means the same on both backends; the sticks' y axis is flipped (SDL: down is positive).
++//   Motion   the gyro and accelerometer of the first gamepad that has both (SDL: rad/s and m/s², frame D of dm_pad_core.h: the force the sensor feels, flat face up = +z).
++//   Rumble   SDL has two motors, a low-frequency and a high-frequency one: the Switch's low band drives the first, the high band the second (the stronger of the left and right devices each). SDL_RumbleGamepad
++//            takes a duration, so a value that holds is refreshed every 60 ms with a 150 ms duration. SDL's controller rumble has no layered bands per side: for a DualSense, GameController (the default
++//            backend) gives the richer haptics.
++// SDL's HIDAPI drivers are switched off: on iOS they would go through CoreBluetooth, which needs a usage description the app does not carry; controllers come through SDL's GameController (MFi) driver.
++#include "dm_ctrl.h"
++
++#ifndef DM_HAVE_SDL3
++int dm_sdl3_available(void) { return 0; }
++int dm_sdl3_start(const dm_ctrl_ops *ops) { (void)ops; return 0; }
++#else
++#include <SDL3/SDL.h>
++#include <pthread.h>
++#include <pthread/qos.h>
++#include <string.h>
++#include "dm.h"
++#include "dm_input.h"
++#include "dm_pad_core.h"
++
++#define MAXPAD 4
++typedef struct { SDL_Gamepad *gp; SDL_JoystickID id; dm_ctrl_state last; int has_motion; } pad_t;
++static pad_t g_pads[MAXPAD];
++static int g_npads, g_active = -1, g_primary = -1;   // g_primary: the pad whose motion and rumble are used
++static dm_ctrl_ops g_ops;
++static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
++static float g_rv[2][4]; static int g_rdirty;   // the newest value per device (amp low, freq low, amp high, freq high)
++
++int dm_sdl3_available(void) { return 1; }
++
++static void rumble_sink(int dev, float al, float fl, float ah, float fh) {
++    if (dev < 0 || dev > 1) return;
++    pthread_mutex_lock(&g_rmu);
++    g_rv[dev][0] = al; g_rv[dev][1] = fl; g_rv[dev][2] = ah; g_rv[dev][3] = fh; g_rdirty = 1;
++    pthread_mutex_unlock(&g_rmu);
++}
++
++static dm_ctrl_state read_state(SDL_Gamepad *g) {
++    uint64_t m = dm_pad_face_buttons(dm_ctrl_face_layout(),
++        SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_SOUTH), SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_EAST),
++        SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_WEST), SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_NORTH));
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))  m |= DM_BTN_L;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) m |= DM_BTN_R;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_LEFT_STICK))  m |= DM_BTN_LS;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) m |= DM_BTN_RS;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_UP))    m |= DM_BTN_UP;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_DOWN))  m |= DM_BTN_DOWN;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_LEFT))  m |= DM_BTN_LEFT;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) m |= DM_BTN_RIGHT;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_START)) m |= DM_BTN_PLUS;
++    if (SDL_GetGamepadButton(g, SDL_GAMEPAD_BUTTON_BACK))  m |= DM_BTN_MINUS;
++    const int TRIG = 8192;   // a quarter of the trigger's travel counts as pressed
++    if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIG)  m |= DM_BTN_ZL;
++    if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIG) m |= DM_BTN_ZR;
++    #define AX(a) ((float)SDL_GetGamepadAxis(g, a) / 32767.0f)
++    dm_ctrl_state s = {m, dm_pad_axis(AX(SDL_GAMEPAD_AXIS_LEFTX)), dm_pad_axis(-AX(SDL_GAMEPAD_AXIS_LEFTY)),
++                          dm_pad_axis(AX(SDL_GAMEPAD_AXIS_RIGHTX)), dm_pad_axis(-AX(SDL_GAMEPAD_AXIS_RIGHTY))};
++    #undef AX
++    return s;
++}
++
++static void choose_primary(void) {   // the first pad with gyro and accelerometer, else the first pad
++    int best = g_npads ? 0 : -1;
++    for (int i = 0; i < g_npads; i++) if (g_pads[i].has_motion) { best = i; break; }
++    if (best == g_primary) return;
++    if (g_primary >= 0 && g_primary < g_npads && g_pads[g_primary].has_motion) {
++        SDL_SetGamepadSensorEnabled(g_pads[g_primary].gp, SDL_SENSOR_GYRO, false); SDL_SetGamepadSensorEnabled(g_pads[g_primary].gp, SDL_SENSOR_ACCEL, false);
++    }
++    dm_rumble_attach(NULL); dm_ctrl_motion_off();
++    g_primary = best;
++    if (best < 0) return;
++    pad_t *p = &g_pads[best];
++    if (p->has_motion && dm_ctrl_motion_enabled()) {
++        SDL_SetGamepadSensorEnabled(p->gp, SDL_SENSOR_GYRO, true); SDL_SetGamepadSensorEnabled(p->gp, SDL_SENSOR_ACCEL, true);
++    } else p->has_motion = 0;
++    int rumble = dm_ctrl_rumble_enabled() && SDL_GetBooleanProperty(SDL_GetGamepadProperties(p->gp), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
++    if (rumble) { pthread_mutex_lock(&g_rmu); memset(g_rv, 0, sizeof g_rv); g_rdirty = 0; pthread_mutex_unlock(&g_rmu); dm_rumble_attach(rumble_sink); }
++    LOG("SDL3 controller %s: motion %s, rumble %s", SDL_GetGamepadName(p->gp) ? SDL_GetGamepadName(p->gp) : "?", p->has_motion ? "on" : "off", rumble ? "on" : "off");
++}
++
++static void add_pad(SDL_JoystickID id) {
++    for (int i = 0; i < g_npads; i++) if (g_pads[i].id == id) return;   // already open (the startup scan and the added event both report it)
++    if (g_npads >= MAXPAD) return;
++    SDL_Gamepad *gp = SDL_OpenGamepad(id);
++    if (!gp) { LOG("SDL3: cannot open gamepad %u: %s", (unsigned)id, SDL_GetError()); return; }
++    pad_t *p = &g_pads[g_npads++]; memset(p, 0, sizeof *p);
++    p->gp = gp; p->id = id; p->last = read_state(gp);
++    p->has_motion = SDL_GamepadHasSensor(gp, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(gp, SDL_SENSOR_ACCEL);
++    choose_primary();
++    g_ops.presence(1);
++}
++
++static void remove_pad(SDL_JoystickID id) {
++    int k = -1; for (int i = 0; i < g_npads; i++) if (g_pads[i].id == id) k = i;
++    if (k < 0) return;
++    SDL_Gamepad *gp = g_pads[k].gp;
++    int was_primary = k == g_primary;
++    if (was_primary) { dm_rumble_attach(NULL); dm_ctrl_motion_off(); g_primary = -2; }   // -2: nothing chosen, so choose_primary below picks again whatever the index
++    for (int i = k; i + 1 < g_npads; i++) g_pads[i] = g_pads[i + 1];
++    g_npads--;
++    if (g_primary > k) g_primary--;
++    if (g_active == k) g_active = -1; else if (g_active > k) g_active--;
++    SDL_CloseGamepad(gp);
++    if (was_primary) choose_primary();
++    if (!g_npads) { dm_ctrl_state z = {0, 0, 0, 0, 0}; g_ops.state(&z); g_ops.presence(0); }
++    else if (g_active < 0) { g_ops.state(&g_pads[0].last); }
++}
++
++static void pump_motion(void) {
++    if (g_primary < 0 || !g_pads[g_primary].has_motion) return;
++    SDL_Gamepad *gp = g_pads[g_primary].gp; float g[3], a[3];
++    if (!SDL_GetGamepadSensorData(gp, SDL_SENSOR_GYRO, g, 3) || !SDL_GetGamepadSensorData(gp, SDL_SENSOR_ACCEL, a, 3)) return;
++    const float G = 9.80665f;
++    float f[3] = {a[0] / G, a[1] / G, a[2] / G};
++    dm_ctrl_motion(f, g);
++}
++
++static void pump_rumble(void) {
++    static int was_on; static uint64_t last_ms;
++    if (g_primary < 0) return;
++    float v[2][4]; int dirty;
++    pthread_mutex_lock(&g_rmu); memcpy(v, g_rv, sizeof v); dirty = g_rdirty; g_rdirty = 0; pthread_mutex_unlock(&g_rmu);
++    float gain = dm_ctrl_rumble_gain();
++    float lo = (v[0][0] > v[1][0] ? v[0][0] : v[1][0]) * gain, hi = (v[0][2] > v[1][2] ? v[0][2] : v[1][2]) * gain;
++    uint64_t now = SDL_GetTicks();
++    if (lo > 0.f || hi > 0.f) {
++        if (dirty || !was_on || now - last_ms >= 60) { SDL_RumbleGamepad(g_pads[g_primary].gp, dm_hd_to_u16(lo), dm_hd_to_u16(hi), 150); last_ms = now; }
++        was_on = 1;
++    } else if (was_on || dirty) { SDL_RumbleGamepad(g_pads[g_primary].gp, 0, 0, 0); was_on = 0; }
++}
++
++static void *sdl_thread(void *arg) {
++    (void)arg;
++    pthread_setname_np("dm.pad.sdl3");
++    for (;;) {
++        SDL_Event e;
++        while (SDL_PollEvent(&e)) {
++            if (e.type == SDL_EVENT_GAMEPAD_ADDED) add_pad(e.gdevice.which);
++            else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) remove_pad(e.gdevice.which);
++        }
++        for (int i = 0; i < g_npads; i++) {
++            dm_ctrl_state s = read_state(g_pads[i].gp);
++            if (memcmp(&s, &g_pads[i].last, sizeof s)) { g_pads[i].last = s; g_active = i; g_ops.state(&s); }
++        }
++        pump_motion();
++        pump_rumble();
++        SDL_Delay(2);
++    }
++    return NULL;
++}
++
++int dm_sdl3_start(const dm_ctrl_ops *ops) {
++    g_ops = *ops;
++    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");                       // see the top of the file
++    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
++    if (!SDL_Init(SDL_INIT_GAMEPAD)) { LOG("SDL3: SDL_Init failed: %s", SDL_GetError()); return 0; }
++    int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);   // controllers already connected at launch
++    for (int i = 0; ids && i < n; i++) add_pad(ids[i]);
++    SDL_free(ids);
++    pthread_attr_t at; pthread_attr_init(&at); pthread_attr_set_qos_class_np(&at, QOS_CLASS_USER_INTERACTIVE, 0);
++    pthread_t th; int rc = pthread_create(&th, &at, sdl_thread, NULL); pthread_attr_destroy(&at);
++    if (rc) { LOG("SDL3: cannot start the polling thread (%d)", rc); SDL_Quit(); return 0; }
++    pthread_detach(th);
++    return 1;
++}
++#endif
+diff -ruN orig/nxnative-main/dm/ios/Sources/dm_ctrl.h nx/nxnative-main/dm/ios/Sources/dm_ctrl.h
+--- orig/nxnative-main/dm/ios/Sources/dm_ctrl.h	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/dm_ctrl.h	2026-10-24 06:44:18.047298374 +0000
+@@ -0,0 +1,35 @@
++// Physical controllers on iOS: one of two backends reads them (DmController.m on GameController, the default; DmSDL3Pad.c on SDL3, when the app was built with it), and both report to DmGamepad.m through
++// these calls. Buttons and sticks go out as the host's input bits (dm_input.h); motion and rumble go straight to the host (dm_pad_motion_set, dm_rumble_attach).
++//
++// Environment (Documents/env.txt):
++//   DM_PAD_BACKEND=auto|gc|sdl3   auto (the default) and gc: GameController. sdl3: SDL3, when the app was built with it (else GameController, with a log line)
++//   DM_PAD_FACE=xbox|nintendo     the face keys' meaning, see dm_pad_core.h (xbox by default)
++//   DM_MOTION=0                   leave a controller's gyro and accelerometer off
++//   DM_MOTION_AXES=x,-y,-z        the axis map from the controller's frame to the Switch's, see dm_pad_core.h
++//   DM_MOTION_LOG=1               log a sample of the motion twice a second (to check the axes on a real device)
++//   DM_RUMBLE=0                   no rumble
++//   DM_RUMBLE_GAIN=1.0            rumble strength (0..2; the result is limited to full strength)
++#pragma once
++#include <stdint.h>
++
++typedef struct { uint64_t buttons; int32_t lx, ly, rx, ry; } dm_ctrl_state;   // buttons: dm_input.h bits; sticks ±32767, up positive
++typedef struct {
++    void (*state)(const dm_ctrl_state *s);   // the physical controller's buttons and sticks changed (any thread)
++    void (*presence)(int connected);         // at least one physical controller is connected / none is (any thread)
++} dm_ctrl_ops;
++
++// Start reading controllers (main thread, once). Chooses the backend and logs which
++void dm_ctrl_start(const dm_ctrl_ops *ops);
++
++// ---- for the backends ----
++int dm_ctrl_face_layout(void);                                            // DM_FACE_XBOX / DM_FACE_NINTENDO
++int dm_ctrl_motion_enabled(void);
++int dm_ctrl_rumble_enabled(void);
++float dm_ctrl_rumble_gain(void);
++// One motion sample in frame D (x right, y toward the top edge, z out of the face; acceleration as the force the sensor feels, in G; angular velocity in rad/s): mapped to the Switch frame and given to the host
++void dm_ctrl_motion(const float force_g[3], const float gyro_rps[3]);
++void dm_ctrl_motion_off(void);
++
++// SDL3 backend (DmSDL3Pad.c). dm_sdl3_available is 0 when the app was built without SDL3; dm_sdl3_start then does nothing and returns 0. A 1 means the backend runs (it owns the controllers)
++int dm_sdl3_available(void);
++int dm_sdl3_start(const dm_ctrl_ops *ops);
+diff -ruN orig/nxnative-main/dm/ios/Sources/dm_pad_core.c nx/nxnative-main/dm/ios/Sources/dm_pad_core.c
+--- orig/nxnative-main/dm/ios/Sources/dm_pad_core.c	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/dm_pad_core.c	2026-10-24 06:42:25.284969022 +0000
+@@ -0,0 +1,88 @@
++// Controller core (see dm_pad_core.h): no Apple or SDL headers.
++#include "dm_pad_core.h"
++#include <math.h>
++#include <strings.h>
++#include <string.h>
++
++// dm_input.h's DM_BTN_A..Y, repeated as plain bit numbers so this file includes nothing from the host
++enum { BIT_A = 0, BIT_B = 1, BIT_X = 2, BIT_Y = 3 };
++
++int dm_pad_face_parse(const char *s, int dflt) {
++    if (!s) return dflt;
++    if (!strcasecmp(s, "xbox")) return DM_FACE_XBOX;
++    if (!strcasecmp(s, "nintendo") || !strcasecmp(s, "switch") || !strcasecmp(s, "position")) return DM_FACE_NINTENDO;
++    return dflt;
++}
++
++uint64_t dm_pad_face_buttons(int layout, int south, int east, int west, int north) {
++    uint64_t m = 0;
++    if (layout == DM_FACE_NINTENDO) {   // A right, B bottom, X top, Y left
++        if (south) m |= 1ull << BIT_B;
++        if (east)  m |= 1ull << BIT_A;
++        if (west)  m |= 1ull << BIT_Y;
++        if (north) m |= 1ull << BIT_X;
++    } else {                            // Xbox: A bottom, B right, X left, Y top
++        if (south) m |= 1ull << BIT_A;
++        if (east)  m |= 1ull << BIT_B;
++        if (west)  m |= 1ull << BIT_X;
++        if (north) m |= 1ull << BIT_Y;
++    }
++    return m;
++}
++
++int32_t dm_pad_axis(float v) {
++    if (isnan(v)) return 0;
++    if (v > 1.f) v = 1.f;
++    if (v < -1.f) v = -1.f;
++    return (int32_t)lrintf(v * 32767.f);
++}
++
++const dm_axmap DM_AXMAP_DEFAULT = {{0, 1, 2}, {1, -1, -1}};
++
++int dm_axmap_parse(const char *s, dm_axmap *out) {
++    if (!s || !out) return 0;
++    char b[32]; size_t n = 0;
++    for (const char *p = s; *p; p++) {   // drop spaces
++        if (*p == ' ' || *p == '\t') continue;
++        if (n + 1 >= sizeof b) return 0;
++        b[n++] = *p;
++    }
++    b[n] = 0;
++    int commas = 0; for (const char *p = b; *p; p++) commas += *p == ',';
++    if (commas != 2) return 0;           // strtok_r would skip empty tokens: "x,,y,z" must not pass
++    dm_axmap m; int used = 0, k = 0;
++    char *save = NULL;
++    for (char *tok = strtok_r(b, ",", &save); tok; tok = strtok_r(NULL, ",", &save), k++) {
++        if (k >= 3) return 0;
++        int sgn = 1; const char *c = tok;
++        if (*c == '-') { sgn = -1; c++; } else if (*c == '+') c++;
++        int a;
++        if (*c == 'x' || *c == 'X') a = 0; else if (*c == 'y' || *c == 'Y') a = 1; else if (*c == 'z' || *c == 'Z') a = 2; else return 0;
++        if (c[1]) return 0;              // nothing after the axis letter
++        if (used & (1 << a)) return 0;   // each axis once
++        used |= 1 << a; m.src[k] = (int8_t)a; m.sgn[k] = (int8_t)sgn;
++    }
++    if (k != 3) return 0;
++    *out = m; return 1;
++}
++
++void dm_axmap_apply(const dm_axmap *m, const float in[3], float out[3]) {
++    float t[3] = {in[0], in[1], in[2]};   // in and out may be the same array
++    for (int i = 0; i < 3; i++) out[i] = (float)m->sgn[i] * t[m->src[i]];
++}
++
++#define HD_FMIN 40.0f
++#define HD_FMAX 1252.0f
++static float clamp01(float v) { return isnan(v) ? 0.f : v < 0.f ? 0.f : v > 1.f ? 1.f : v; }
++static float sharp_of(float f) {
++    if (isnan(f) || f < HD_FMIN) f = HD_FMIN;
++    if (f > HD_FMAX) f = HD_FMAX;
++    return clamp01(log2f(f / HD_FMIN) / log2f(HD_FMAX / HD_FMIN));
++}
++
++void dm_hd_to_haptic(float amp, float freq_hz, float *intensity, float *sharpness) {
++    if (intensity) *intensity = clamp01(amp);
++    if (sharpness) *sharpness = sharp_of(freq_hz);
++}
++
++uint16_t dm_hd_to_u16(float amp) { return (uint16_t)lrintf(clamp01(amp) * 65535.f); }
+diff -ruN orig/nxnative-main/dm/ios/Sources/dm_pad_core.h nx/nxnative-main/dm/ios/Sources/dm_pad_core.h
+--- orig/nxnative-main/dm/ios/Sources/dm_pad_core.h	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/dm_pad_core.h	2026-10-24 06:42:25.285224279 +0000
+@@ -0,0 +1,37 @@
++// Controller core: the parts of the physical-controller path that need no Apple or SDL headers, so they are unit-tested on any machine (dm/host/tests/t_pad_core.c).
++// Used by DmController.m (GameController backend), DmSDL3Pad.c (SDL3 backend) and DmGamepad.m.
++#pragma once
++#include <stdint.h>
++
++// ---- Face buttons ----
++// The face buttons arrive by position (south = bottom, east = right, west = left, north = top), which is how both GameController and SDL3 name them.
++//   DM_FACE_XBOX     (the default) Xbox layout: A bottom, B right, X left, Y top. The game's A is the bottom key, B the right one, X the left one and Y the top one.
++//   DM_FACE_NINTENDO Nintendo positions, what the app did before: A right, B bottom, X top, Y left.
++// The touch gamepad keeps the Nintendo positions in both cases (DmGamepad.m); this only decides what a physical controller's keys mean.
++enum { DM_FACE_XBOX = 0, DM_FACE_NINTENDO = 1 };
++// "xbox" / "nintendo" (also "switch", "position"), any case; anything else (and NULL) gives dflt
++int dm_pad_face_parse(const char *s, int dflt);
++// The game's A / B / X / Y bits (dm_input.h DM_BTN_A..Y: bits 0..3) for the four keys by position
++uint64_t dm_pad_face_buttons(int layout, int south, int east, int west, int north);
++
++// ---- Sticks ----
++// -1..1 → -32767..32767 (the host's range). Clamps; NaN → 0
++int32_t dm_pad_axis(float v);
++
++// ---- Motion axes ----
++// The host's six-axis state uses the Switch controller frame, in which a controller lying flat, face up, reads acceleration (0, 0, -1) G (hle_hid.c): x to the right, y toward the player, z down into the body.
++// The front ends first bring a sample to the frame D that SDL3 uses (x right, y toward the top edge / away from the player, z out of the face), with acceleration as the force the sensor feels
++// (flat face up: (0, 0, +1) G; GameController reports the gravity vector instead, which is the negative: DmController.m negates it). D → Switch frame is a half turn about x: (x, -y, -z), for acceleration and
++// angular velocity alike. An axis map says it per output axis: out[i] = sgn[i] * in[src[i]]. DM_MOTION_AXES (Documents/env.txt) replaces the default if a controller's axes turn out different on a real device.
++typedef struct { int8_t src[3]; int8_t sgn[3]; } dm_axmap;
++extern const dm_axmap DM_AXMAP_DEFAULT;   // "x,-y,-z"
++// "x,-y,-z": three tokens, each x, y or z with an optional + or - sign, every axis exactly once (spaces are ignored). Returns 1 and fills out, or 0 and leaves out alone
++int dm_axmap_parse(const char *s, dm_axmap *out);
++void dm_axmap_apply(const dm_axmap *m, const float in[3], float out[3]);
++
++// ---- HD rumble ----
++// A Switch vibration value holds two bands, each an amplitude 0..1 and a frequency in Hz (40..1252; the defaults are 160 Hz low and 320 Hz high).
++// A Core Haptics event has an intensity and a sharpness, both 0..1: the band's amplitude and its frequency on a log scale over 40..1252 Hz.
++void dm_hd_to_haptic(float amp, float freq_hz, float *intensity, float *sharpness);
++// Amplitude 0..1 → 0..65535 (SDL_RumbleGamepad's scale)
++uint16_t dm_hd_to_u16(float amp);
+diff -ruN orig/nxnative-main/dm/ios/Sources/front_ios.m nx/nxnative-main/dm/ios/Sources/front_ios.m
+--- orig/nxnative-main/dm/ios/Sources/front_ios.m	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/ios/Sources/front_ios.m	2026-10-24 06:46:12.630087392 +0000
+@@ -11,6 +11,7 @@
+ 
+ UIView *dm_gamepad_view(CGRect frame);
+ void dm_gamepad_reset(void);
++CGFloat dm_pad_unit(CGSize screen);   // DmGamepad.m: the controls' unit for this screen
+ void front_ios_boot(void);
+ int front_ios_boot_ok(void);
+ 
+@@ -44,6 +45,13 @@
+ @property (nonatomic, strong) UIView *pad;
+ @property (nonatomic, strong) UILabel *fps;
+ @end
++// Fit the game to a 1.43:1 viewport inside the whole screen (centred; also DmGamepad.m's touch mapping)
++CGRect dm_game_rect(CGRect b) {
++    static const CGFloat gameAspectRatio = 1.43;
++    CGFloat w = b.size.width, h = b.size.height;
++    if (w / h > gameAspectRatio) w = h * gameAspectRatio; else h = w / gameAspectRatio;
++    return CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
++}
+ @implementation DmRootVC
+ - (void)viewDidLoad {
+     [super viewDidLoad];
+@@ -69,12 +77,9 @@
+ - (void)viewDidLayoutSubviews {
+     [super viewDidLayoutSubviews];
+     CGRect b = self.view.bounds; if (!self.game) return;
+-    CGFloat w = b.size.width, h = b.size.height;   // Fit the game to a 1.43:1 viewport inside the whole screen
+-    static const CGFloat gameAspectRatio = 1.43;
+-    if (w / h > gameAspectRatio) w = h * gameAspectRatio; else h = w / gameAspectRatio;
+-    self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
++    self.game.frame = dm_game_rect(b);
+     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
+-        CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
++        CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = dm_pad_unit(b.size);
+         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+     }
+ }
+diff -ruN orig/nxnative-main/dm/ios/project.yml nx/nxnative-main/dm/ios/project.yml
+--- orig/nxnative-main/dm/ios/project.yml	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/ios/project.yml	2026-10-24 06:47:37.559935248 +0000
+@@ -21,6 +21,8 @@
+       - path: Gen/src         # Source files from the compile commands of dm/host/Makefile (linked in by tools/gen_build.py)
+       - path: Gen/main/main.c
+         compilerFlags: "-Dmain=dm_main"
++    dependencies:
++      - sdk: CoreHaptics.framework   # DualSense / Xbox HD rumble (DmController.m); GameController, CoreMotion and the rest come from the host's link line or autolinking
+     info:
+       path: Sources/Info.plist
+       properties:
+@@ -61,7 +63,8 @@
+       TARGETED_DEVICE_FAMILY: "1,2"
+       ENABLE_BITCODE: NO
+       GCC_C_LANGUAGE_STANDARD: gnu11
+-      OTHER_CFLAGS: $(inherited) -mcpu=apple-a18   # The host assembly contains LSE atomic instructions, which the default baseline does not accept
++      OTHER_CFLAGS: $(inherited) -mcpu=apple-a18 $(DM_SDL3_DEFS)   # The host assembly contains LSE atomic instructions, which the default baseline does not accept. DM_SDL3_DEFS: -DDM_HAVE_SDL3=1 when build_ipa.sh was given SDL3_PREFIX, else empty
++      HEADER_SEARCH_PATHS: $(inherited) $(DM_SDL3_INC)   # the SDL3 headers, likewise empty without SDL3_PREFIX
+       CLANG_ENABLE_OBJC_ARC: YES
+       DEBUG_INFORMATION_FORMAT: dwarf
+       GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+diff -ruN orig/nxnative-main/dm/ios/tools/build_ipa.sh nx/nxnative-main/dm/ios/tools/build_ipa.sh
+--- orig/nxnative-main/dm/ios/tools/build_ipa.sh	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/dm/ios/tools/build_ipa.sh	2026-10-24 06:47:37.560264166 +0000
+@@ -46,7 +46,17 @@
+ rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
+ python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
+ F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS) || die "gen_embed"
+-echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
++# SDL3 gamepad backend (optional): SDL3_PREFIX=<prefix> (tools/build_sdl3.sh builds one) compiles Sources/DmSDL3Pad.c with SDL3 and links libSDL3.a; DM_PAD_BACKEND=sdl3 in the app's Documents/env.txt then selects it.
++# Without SDL3_PREFIX the three variables stay empty and that file is two stubs. SDL's HIDAPI drivers are not used (DmSDL3Pad.c switches them off), the frameworks are what a static SDL3 on iOS references
++if [ -n "${SDL3_PREFIX:-}" ]; then
++  [ -f "$SDL3_PREFIX/lib/libSDL3.a" ] && [ -f "$SDL3_PREFIX/include/SDL3/SDL.h" ] || die "SDL3_PREFIX=$SDL3_PREFIX has no lib/libSDL3.a and include/SDL3/SDL.h (tools/build_sdl3.sh <SDL3 source> builds them)"
++  S3=$(cd "$SDL3_PREFIX" && pwd)
++  echo "DM_SDL3_INC = \"$S3/include\"" >> Gen/dm.xcconfig
++  echo "DM_SDL3_DEFS = -DDM_HAVE_SDL3=1" >> Gen/dm.xcconfig
++  echo "DM_SDL3_LIBS = -ObjC \"$S3/lib/libSDL3.a\" -framework AudioToolbox -framework AVFoundation -framework CoreAudio -framework CoreBluetooth -framework CoreFoundation -framework CoreGraphics -framework CoreHaptics -framework CoreMedia -framework CoreMotion -framework CoreVideo -framework Foundation -framework GameController -framework ImageIO -framework Metal -framework MobileCoreServices -framework QuartzCore -framework UIKit -framework UniformTypeIdentifiers" >> Gen/dm.xcconfig
++  t "SDL3 gamepad backend: $S3"
++fi
++echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F \$(DM_SDL3_LIBS)" >> Gen/dm.xcconfig
+ cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv Gen/dm/ || die "copy rewriter tables"
+ if [ "$GFXAPI" = vulkan ] || [ "$GFXAPI" = gl ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer draws nothing
+ else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"
+diff -ruN orig/nxnative-main/dm/ios/tools/build_sdl3.sh nx/nxnative-main/dm/ios/tools/build_sdl3.sh
+--- orig/nxnative-main/dm/ios/tools/build_sdl3.sh	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/ios/tools/build_sdl3.sh	2026-10-24 06:47:37.570829127 +0000
+@@ -0,0 +1,19 @@
++#!/bin/bash
++# Build SDL3 as a static library for iOS devices (arm64) into a prefix that build_ipa.sh takes as SDL3_PREFIX (the optional SDL3 gamepad backend, Sources/DmSDL3Pad.c).
++# Nothing is downloaded here: pass an extracted SDL3 source tree (a release of libsdl-org/SDL, 3.2 or newer).
++# Usage: dm/ios/tools/build_sdl3.sh <SDL3 source dir> [prefix]   (prefix defaults to dm/third_party/sdl3-ios, which .gitignore covers)
++# Then:  SDL3_PREFIX=dm/third_party/sdl3-ios GAME=... W=... dm/ios/tools/build_ipa.sh      and      DM_PAD_BACKEND=sdl3 in the app's Documents/env.txt
++# Needs Xcode and cmake (brew install cmake). The options leave out what a gamepad backend never uses (HIDAPI, which on iOS would go through CoreBluetooth; Vulkan; OpenGL; GPU; camera; dialogs; tests)
++set -eu
++SRC=${1:?usage: $0 <SDL3 source dir> [prefix]}
++PREFIX=${2:-$(cd "$(dirname "$0")/../.." && pwd)/third_party/sdl3-ios}
++[ -f "$SRC/CMakeLists.txt" ] && [ -f "$SRC/include/SDL3/SDL.h" ] || { echo "FAIL: $SRC is not an SDL3 source tree (no CMakeLists.txt and include/SDL3/SDL.h)" >&2; exit 1; }
++command -v cmake > /dev/null || { echo "FAIL: cmake is needed (brew install cmake)" >&2; exit 1; }
++B=$(mktemp -d); trap 'rm -rf "$B"' EXIT
++cmake -S "$SRC" -B "$B" -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
++  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_INSTALL=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
++  -DSDL_HIDAPI=OFF -DSDL_VULKAN=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF -DSDL_DIALOG=OFF
++cmake --build "$B" --config Release -j "$(sysctl -n hw.ncpu)"
++cmake --install "$B" --config Release
++[ -f "$PREFIX/lib/libSDL3.a" ] && [ -f "$PREFIX/include/SDL3/SDL.h" ] || { echo "FAIL: the install has no lib/libSDL3.a and include/SDL3/SDL.h under $PREFIX" >&2; exit 1; }
++echo "SDL3 for iOS installed in $PREFIX: SDL3_PREFIX=$PREFIX"
+diff -ruN orig/nxnative-main/dm/tools/aspect_scan.py nx/nxnative-main/dm/tools/aspect_scan.py
+--- orig/nxnative-main/dm/tools/aspect_scan.py	1970-01-01 00:00:00.000000000 +0000
++++ nx/nxnative-main/dm/tools/aspect_scan.py	2026-10-24 06:49:52.274885262 +0000
+@@ -0,0 +1,106 @@
++#!/usr/bin/env python3
++# Find where a game's code holds the 16:9 aspect ratio, to patch it to another one (the 1.43:1 iPad view shows the game's 16:9 picture letterboxed; a game draws a full 1.43:1 picture only once its own
++# projection and HUD layout use that ratio). The scanner reads the game's main NSO and lists, as module offsets (main+0x...):
++#   code      a MOVZ / MOVK pair that builds 16/9 as a 32-bit float (0x3FE38E39) in a register, within 4 instructions of each other, either order; the pair is printed as a ready-to-paste CUTS entry
++#             (dm/tools/patch_nso.py: (offset, old bytes, new bytes, comment); the rewriter checks the old bytes) that rebuilds the register with the new ratio instead
++#   data      the 32-bit float 16/9 and the double 16/9 in the read-only and data segments (literal pools: one load site per user, so patching one changes every user; listed for finding the load sites, not patched)
++# It does not know which hit is the camera's projection and which the HUD's layout: that takes a trial per candidate on a device (patch one, look at the picture). Nothing here is specific to one game.
++# Usage: aspect_scan.py <main NSO> [--ratio 1.43] [--cuts] [--raw]
++#   --ratio R   the ratio the CUTS entries build (default 1.43, the viewport front_ios.m fits)
++#   --cuts      print only the CUTS lines
++#   --raw       the file is an already decompressed module image (as dm/tools/nso.py writes), text at 0
++import struct, sys
++
++def load_nso(path):
++    d = open(path, 'rb').read()
++    if d[:4] != b'NSO0': sys.exit(f'{path}: not an NSO (no NSO0 magic); use --raw for a decompressed image')
++    flags = struct.unpack_from('<I', d, 0xc)[0]
++    segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
++    csz = struct.unpack_from('<III', d, 0x60)
++    out = []
++    for i, (fo, mo, sz) in enumerate(segs):
++        raw = d[fo:fo + csz[i]]
++        if flags >> i & 1:
++            try: import lz4.block
++            except ImportError: sys.exit('this NSO is compressed: pip install lz4 (the repo\'s tools need it as well)')
++            raw = lz4.block.decompress(raw, uncompressed_size=sz)
++        if len(raw) != sz: sys.exit(f'segment {i}: {len(raw)} bytes, expected {sz}')
++        out.append((mo, bytearray(raw)))
++    return d[0x40:0x50].hex(), out
++
++def f32_bits(x): return struct.unpack('<I', struct.pack('<f', x))[0]
++def movz(rd, imm, hw=0): return 0x52800000 | hw << 21 | imm << 5 | rd   # movz wd, #imm, lsl #(16*hw)
++def movk(rd, imm, hw=0): return 0x72800000 | hw << 21 | imm << 5 | rd
++def is_movz(w): return w & 0x7F800000 == 0x52800000 and w >> 31 == 0
++def is_movk(w): return w & 0x7F800000 == 0x72800000 and w >> 31 == 0
++def imm_hw(w): return w >> 5 & 0xFFFF, w >> 21 & 3
++
++def main():
++    a = sys.argv[1:]
++    raw = '--raw' in a; cuts_only = '--cuts' in a; ratio = 1.43
++    if '--ratio' in a:
++        try: ratio = float(a[a.index('--ratio') + 1])
++        except (IndexError, ValueError): sys.exit('--ratio needs a number')
++    if not 0.5 < ratio < 4: sys.exit('--ratio out of range')
++    files = [x for i, x in enumerate(a) if not x.startswith('--') and (i == 0 or a[i - 1] != '--ratio')]
++    if len(files) != 1: sys.exit(__doc__)
++    if raw:
++        bid = '?'; img = open(files[0], 'rb').read(); segs = [(0, bytearray(img))]
++    else:
++        bid, segs = load_nso(files[0])
++    OLD = f32_bits(16 / 9); NEW = f32_bits(ratio)
++    ohi, olo, nhi, nlo = OLD >> 16, OLD & 0xFFFF, NEW >> 16, NEW & 0xFFFF
++    if not cuts_only:
++        print(f'# build id {bid}; 16/9 = {OLD:#010x}, {ratio} = {NEW:#010x}')
++    text_mo, text = segs[0]
++    cands = []   # (index of the first instruction, [(index, old word, new word) x 2], register)
++    n = len(text) // 4
++    words = struct.unpack_from(f'<{n}I', text, 0)
++    used = set()
++    for i, w in enumerate(words):
++        if i in used or not (is_movz(w) or is_movk(w)): continue
++        imm, hw = imm_hw(w); rd = w & 31
++        if not ((hw == 0 and imm == olo) or (hw == 1 and imm == ohi)): continue
++        for j in range(i + 1, min(i + 5, n)):
++            v = words[j]
++            if j in used or not (is_movz(v) or is_movk(v)) or v & 31 != rd: continue
++            imm2, hw2 = imm_hw(v)
++            first_lo = hw == 0 and imm == olo and hw2 == 1 and imm2 == ohi
++            first_hi = hw == 1 and imm == ohi and hw2 == 0 and imm2 == olo
++            # the first instruction is the MOVZ (it clears the register), the second the MOVK that completes the value (a MOVK first would be overwritten by the MOVZ)
++            if not (first_lo or first_hi) or not (is_movz(w) and is_movk(v)): continue
++            def rebuilt(word):   # the same instruction kind and register, the new half
++                k, h = imm_hw(word)
++                newimm = nlo if h == 0 else nhi
++                return (movz if is_movz(word) else movk)(word & 31, newimm, h)
++            cands.append((i, [(i, w, rebuilt(w)), (j, v, rebuilt(v))], rd)); used.update((i, j)); break
++    if not cuts_only:
++        print(f'\n## code: {len(cands)} MOVZ/MOVK pair(s) building 16/9 in a register')
++    for k, (i, parts, rd) in enumerate(cands):
++        base = text_mo + i * 4
++        if cuts_only:
++            for (o, ow, nw) in parts:
++                print(f"    ({text_mo + o * 4:#x}, '{struct.pack('<I', ow).hex()}', '{struct.pack('<I', nw).hex()}', 'aspect candidate {k}: 16/9 → {ratio} (w{rd})'),")
++            continue
++        print(f'\n[{k}] main+{base:#x}  w{rd}')
++        for (o, ow, nw) in parts:
++            print(f"    ({text_mo + o * 4:#x}, '{struct.pack('<I', ow).hex()}', '{struct.pack('<I', nw).hex()}', 'aspect candidate {k}: 16/9 → {ratio} (w{rd})'),")
++    # data segments: the float and the double
++    if not cuts_only:
++        want32 = struct.pack('<f', 16 / 9); want64 = struct.pack('<d', 16 / 9)
++        print('\n## data: literal-pool values')
++        found = 0
++        for si, (mo, buf) in enumerate(segs[1:] if not raw else [], 1):
++            for want, name in ((want32, 'float 16/9'), (want64, 'double 16/9')):
++                p = 0
++                while True:
++                    p = buf.find(want, p)
++                    if p < 0: break
++                    if p % len(want) == 0:
++                        found += 1; print(f'  main+{mo + p:#x}  {name}  (segment {si})')
++                    p += 1
++        if not found: print('  none')
++        print('\n# Candidates are not labelled: the camera projection and the HUD layout are different sites. Patch one candidate at a time (CUTS in patch_nso.py, then the rewriter and a device build) and look at the picture:')
++        print('# a projection hit makes the 3D scene wider / taller without squeezing; a layout hit moves HUD elements. docs/development.md ("Aspect ratio") has the workflow.')
++
++if __name__ == '__main__': main()
+diff -ruN orig/nxnative-main/docs/development.md nx/nxnative-main/docs/development.md
+--- orig/nxnative-main/docs/development.md	2026-10-22 13:15:31.000000000 +0000
++++ nx/nxnative-main/docs/development.md	2026-10-24 06:49:52.269733969 +0000
+@@ -10,7 +10,7 @@
+ | Host (`dm/host`) | Stands in for the Horizon kernel and the system services the games call: threads and synchronization, memory, file system with transactional saves, HID, audio, movies (VP9 through libvpx, Vorbis sound through stb_vorbis), software keyboard, focus and lifecycle |
+ | Graphics (`dm/gfx`) | NVN on Metal. Shaders are extracted by `shader_split.py` from Nintendo's containers and from Unity's `Shader` objects, then translated offline. Mario: 16,266 of 16,268 shaders compile. Engage: 9,268 of 9,269. Games that render with Vulkan (Hades) or OpenGL (Digimon Story Cyber Sleuth) go through layers of their own on Metal (`dm/gfx/vk`, `dm/gfx/gl`) |
+ | Audio | Games that carry the SDK's audio renderer (Mario) run it in-process; games that use AudioOut directly (Engage: Wwise) feed it straight. Output goes through Core Audio (default on iOS, `DM_AUDIO=1` on the Mac) |
+-| Input | iOS: the touch gamepad and physical controllers; shaking the phone shakes the controller (its six-axis sensor, `hle_hid.c`; the accelerometer in `DmGamepad.m`, threshold `DM_SHAKE_G`, 1.5 G by default). Mac: scripted input (`DM_KEYS=<seconds>:<button>,…`, `Shake` for a shake, with `DM_KBD=<text>` answering the system keyboard) or `DM_WINDOW=1` for a window with keyboard input (Space shakes) and physical controllers (buttons by position, as on the iPhone). The window goes fullscreen from its green button or ⌃⌘F; `DM_FULLSCREEN=1` starts it that way. The left mouse button is the touchscreen, on the 16:9 picture |
++| Input | iOS: the touch gamepad and physical controllers; shaking the phone shakes the controller (its six-axis sensor, `hle_hid.c`; the accelerometer in `DmGamepad.m`, threshold `DM_SHAKE_G`, 1.5 G by default); a DualSense adds its own gyro and HD rumble ("Controllers, touch controls and the 1.43:1 view" below). Mac: scripted input (`DM_KEYS=<seconds>:<button>,…`, `Shake` for a shake, with `DM_KBD=<text>` answering the system keyboard) or `DM_WINDOW=1` for a window with keyboard input (Space shakes) and physical controllers (buttons by position, as on the iPhone). The window goes fullscreen from its green button or ⌃⌘F; `DM_FULLSCREEN=1` starts it that way. The left mouse button is the touchscreen, on the 16:9 picture |
+ | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app |
+ | Known gaps | Conditional render is always drawn; `MultiDraw*IndirectCount` waits on the CPU for the GPU-written count; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm lists are empty. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
+ 
+@@ -77,6 +77,21 @@
+ 
+ On the device, environment switches go in `Documents/env.txt` (one `KEY=VALUE` per line), and game files are also accepted at `Documents/romfs`.
+ 
++## Controllers, touch controls and the 1.43:1 view
++
++The iOS app fits the game into a centred 1.43:1 view (`dm_game_rect` in `front_ios.m`; an iPad's 2388×1668 screen is that shape, an iPhone gets bars at the sides) with the touch gamepad over the whole screen (`DmGamepad.m`). The Metal present keeps the game's own picture aspect inside the view: a Switch game's 16:9 picture is **letterboxed** in it, never stretched, and `dm_picture_aspect()` (`hle_touch.c`, set by `present_encode` / `present_encode_m4` in `nvn_mtl.m`) tells the touch mapping where that picture is. See "Aspect ratio" below for what filling the view takes.
++
++**Touch layout.** `dm_pad_unit` gives the layout unit `u`: `sqrt(width · height) / 633`, clamped to 0.8–1.6, scaled by `DM_PAD_SCALE`, and cut to `height / 330` and `width / 480` (the controls' extent in `u`), so nothing overlaps on any screen. `front_ios.m` uses it for the frame-rate label too. The left stick floats in games that stay docked (`dm_opmode() == 1`; those read no touch screen) and keeps its fixed ring in handheld-mode games, whose touches belong to the game (`DM_PAD_FLOAT=0/1` overrides).
++
++**Physical controllers** report through `dm_ctrl.h`: `DmController.m` (GameController, the default; `DM_PAD_BACKEND=auto|gc`) or `DmSDL3Pad.c` (`DM_PAD_BACKEND=sdl3`, only in an app built with SDL3). Buttons go through `dm_pad_face_buttons` (`dm_pad_core.c`): Xbox layout by default, `DM_PAD_FACE=nintendo` for the old positions. The touch gamepad keeps the Nintendo positions.
++
++- **Motion.** `GCMotion` (or SDL's gyro and accelerometer) becomes one sample per update in frame D (x right, y toward the top edge, z out of the face; acceleration as the force the sensor feels), then the axis map `DM_MOTION_AXES` (default `x,-y,-z`) takes it to the Switch frame, in which a controller lying flat, face up, reads (0, 0, -1) G (the rest value `hle_hid.c` has always used). `dm_pad_motion_set` hands it to the host, which integrates the angular velocity into the six-axis angle and direction (an exact rotation per step, rows re-orthonormalized) and falls back to the synthetic sensor 0.5 s after the last sample. The default map is derived from that rest value and the documented axes of GameController / SDL3, not measured on a device: with `DM_MOTION_LOG=1` the app logs a sample twice a second (frame D in, Switch frame out); lay the controller flat, face up, and expect acceleration (0, 0, -1) out, then tilt it right and forward and check the signs, and correct them with `DM_MOTION_AXES` (for example `x,y,-z`). The phone-shake sensor still adds its swing on top.
++- **Rumble.** While a controller with haptics is connected the host reports two vibration devices (left, right; `hle_hid.c`), `IsVibrationPermitted` is true, and each value goes to `DmController.m`'s sink, which layers the low band and the high band on two continuous haptic events per handle (intensity from the amplitude, sharpness from the frequency on a log scale over 40–1252 Hz) and stops them after a second of silence. A controller with a single haptics locality gets both sides mixed (the stronger of the two per band). Without a controller nothing is reported, as before. The DualSense's speaker is not an audio output for an iOS app (nothing over Bluetooth, and GameController's haptics are actuator-only), so it is not driven. The SDL3 backend maps the low band to SDL's low-frequency motor and the high band to its high-frequency one (no layering), so GameController is the better backend for a DualSense.
++- **SDL3** is optional and off by default (`DmSDL3Pad.c` is two stubs without `DM_HAVE_SDL3`). Build it from an extracted SDL3 source tree (3.2 or newer; nothing is downloaded): `dm/ios/tools/build_sdl3.sh <SDL source> [prefix]`, then `SDL3_PREFIX=<prefix> … dm/ios/tools/build_ipa.sh`. SDL's HIDAPI drivers are off (they would use CoreBluetooth, which the app has no usage description for): controllers come through SDL's GameController driver, so it sees the same devices; what it adds is SDL's gamepad API. The backend was written against SDL3's public API and has been syntax-checked only against a stub of it: build it once and run it before relying on it.
++- **Tests** (`make -C dm/host/tests GAME=<id> run`): `t_pad_core` (face layouts, axis maps, rumble mapping) and `t_hid_pad`, which includes `hle_hid.c` itself and checks the vibration handles / info / values, the sink, and the six-axis state from a controller's motion against hand-computed rotations.
++
++**Aspect ratio.** A game draws its own picture at its own aspect (a Switch game: 16:9) and lays out its HUD for it, so a 1.43:1 view shows the picture with bars above and below. Stretching it to fill (what an earlier build did) makes circles into ovals; cropping the sides cuts the HUD's corners. Filling the view without either takes the game's own projection and layout to use the new ratio, which is a patch to the game's code, per game and per build (`CUTS` in `patch_nso.py`, keyed by build ID). `dm/tools/aspect_scan.py <main NSO> --ratio 1.43` finds where the code builds 16/9 (MOVZ/MOVK pairs, with the literal-pool copies) and prints each pair as a `CUTS` entry with the old bytes (the rewriter checks them) and the new ones. It cannot say which hit is the camera and which the HUD: add one candidate at a time, run the rewriter and a build, and look at the picture (a projection hit widens or heightens the 3D view without squeezing it; a layout hit moves HUD elements). No such patch exists in the repo yet, because it needs the game's binary.
++
+ ## Port another game
+ 
+ Each game has a profile in `dm/games/<id>/`:

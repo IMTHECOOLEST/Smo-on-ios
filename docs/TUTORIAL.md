@@ -93,6 +93,8 @@ That link is valid for 24 hours. Delete the object when the build is done. (GitH
 - `mode`: leave on `auto`. It builds if nxnative has a profile for the game and runs a survey if not.
 - `title_id`: `0100000000010000` (Odyssey) is the default.
 - `nxnative_ref`: `main`, or a full commit SHA to pin a version. The run summary shows which commit was used.
+- `apply_patches`: leave on to apply `patches/*.patch` (put `controls-1_43.patch` there first). `nxnative_url` must be the repo the patch was made against.
+- `aspect_scan` / `aspect_ratio`: after the build, scan the main NSO for 16:9 sites (default ratio `1.43`); read `diagnostics/aspect-scan.txt`.
 - `runner`: `macos-26` by default. If the run stops with a disk-space message, use a larger or self-hosted Mac.
 - `release_parts`: leave on. See B6.
 

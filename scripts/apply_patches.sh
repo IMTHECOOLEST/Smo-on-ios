@@ -5,9 +5,11 @@
 # already applied stops the build (exit 1) with the reason in REPORT_FILE.
 #
 # Path depth is detected per patch, so both layouts work:
-#   a/dm/x.c, b/dm/x.c                        (git diff, -p1)
+#   a/dm/x.c, b/dm/x.c                                   (git diff, -p1)
 #   orig/nxnative-main/dm/x.c, nx/nxnative-main/dm/x.c   (diff -ruN of two unzipped folders, -p2)
-set -euo pipefail
+#
+# Written for bash 3.2 (macOS /bin/bash): no mapfile, no empty-array expansion.
+set -Eeuo pipefail
 
 NX="${1:?usage: apply_patches.sh <nxnative checkout> <patch dir> <report file>}"
 DIR="${2:?usage: apply_patches.sh <nxnative checkout> <patch dir> <report file>}"
@@ -15,6 +17,9 @@ REPORT="${3:?usage: apply_patches.sh <nxnative checkout> <patch dir> <report fil
 
 mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
+# never die silently: say where, in the report and in the log
+trap 'echo "apply_patches.sh crashed at line $LINENO" | tee -a "$REPORT" >&2' ERR
+
 # git -C changes directory, so patch paths must be absolute
 DIR="$(cd "$DIR" && pwd)"
 shopt -s nullglob
@@ -29,16 +34,18 @@ fi
 # the smallest N for which an existing file in the checkout is named by a
 # '--- old/path' header. Falls back to 1 if none of them exist (all-new-file patch).
 detect_strip() {
-  local patch="$1" p f stripped
-  local -a olds
-  mapfile -t olds < <(awk -F'\t' '/^--- /{sub(/^--- /,"",$1); sub(/[ \r]+$/,"",$1); if ($1!="/dev/null") print $1}' "$patch" | head -n 50)
+  local patch="$1" p f stripped olds
+  olds="$(awk -F'\t' '/^--- /{ if (n < 50) { sub(/^--- /,"",$1); sub(/[ \r]+$/,"",$1); if ($1 != "/dev/null") { print $1; n++ } } }' "$patch")"
   for p in 1 2 3 4; do
-    for f in "${olds[@]}"; do
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
       stripped="$(printf '%s\n' "$f" | cut -d/ -f"$((p + 1))-")"
-      if [[ -n "$stripped" && "$stripped" != "$f" && -e "$NX/$stripped" ]]; then
+      if [ -n "$stripped" ] && [ "$stripped" != "$f" ] && [ -e "$NX/$stripped" ]; then
         echo "$p"; return 0
       fi
-    done
+    done <<EOF
+$olds
+EOF
   done
   echo 1
 }

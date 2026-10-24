@@ -3,6 +3,10 @@
 #   scripts/apply_patches.sh NX_DIR PATCH_DIR REPORT_FILE
 # A patch that is already applied is skipped. A patch that neither applies nor is
 # already applied stops the build (exit 1) with the reason in REPORT_FILE.
+#
+# Path depth is detected per patch, so both layouts work:
+#   a/dm/x.c, b/dm/x.c                        (git diff, -p1)
+#   orig/nxnative-main/dm/x.c, nx/nxnative-main/dm/x.c   (diff -ruN of two unzipped folders, -p2)
 set -euo pipefail
 
 NX="${1:?usage: apply_patches.sh <nxnative checkout> <patch dir> <report file>}"
@@ -11,6 +15,8 @@ REPORT="${3:?usage: apply_patches.sh <nxnative checkout> <patch dir> <report fil
 
 mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
+# git -C changes directory, so patch paths must be absolute
+DIR="$(cd "$DIR" && pwd)"
 shopt -s nullglob
 patches=( "$DIR"/*.patch )
 
@@ -19,20 +25,40 @@ if (( ${#patches[@]} == 0 )); then
   exit 0
 fi
 
+# Print the number of leading path components to strip (-pN) for a patch:
+# the smallest N for which an existing file in the checkout is named by a
+# '--- old/path' header. Falls back to 1 if none of them exist (all-new-file patch).
+detect_strip() {
+  local patch="$1" p f stripped
+  local -a olds
+  mapfile -t olds < <(awk -F'\t' '/^--- /{sub(/^--- /,"",$1); sub(/[ \r]+$/,"",$1); if ($1!="/dev/null") print $1}' "$patch" | head -n 50)
+  for p in 1 2 3 4; do
+    for f in "${olds[@]}"; do
+      stripped="$(printf '%s\n' "$f" | cut -d/ -f"$((p + 1))-")"
+      if [[ -n "$stripped" && "$stripped" != "$f" && -e "$NX/$stripped" ]]; then
+        echo "$p"; return 0
+      fi
+    done
+  done
+  echo 1
+}
+
 for p in "${patches[@]}"; do
   name="$(basename "$p")"
-  if git -C "$NX" apply --check --whitespace=nowarn "$p" >/dev/null 2>&1; then
-    git -C "$NX" apply --whitespace=nowarn "$p"
-    echo "applied: $name" | tee -a "$REPORT"
-  elif git -C "$NX" apply --check --reverse --whitespace=nowarn "$p" >/dev/null 2>&1; then
+  n="$(detect_strip "$p")"
+  if git -C "$NX" apply --check -p"$n" --whitespace=nowarn "$p" >/dev/null 2>&1; then
+    git -C "$NX" apply -p"$n" --whitespace=nowarn "$p"
+    echo "applied (-p$n): $name" | tee -a "$REPORT"
+  elif git -C "$NX" apply --check --reverse -p"$n" --whitespace=nowarn "$p" >/dev/null 2>&1; then
     echo "already applied, skipped: $name" | tee -a "$REPORT"
   else
     {
-      echo "FAILED: $name does not apply to this nxnative commit"
-      git -C "$NX" apply --check --whitespace=nowarn "$p" 2>&1 | head -n 40 || true
+      echo "FAILED: $name does not apply to this nxnative commit (tried -p$n)"
+      git -C "$NX" apply --check -p"$n" --whitespace=nowarn "$p" 2>&1 | head -n 40 || true
     } | tee -a "$REPORT" >&2
-    echo "hint: the patch was made against a different nxnative commit or fork." \
-         "Set nxnative_url/nxnative_ref to the base it was made for, or set apply_patches to false." >&2
+    echo "hint: the patch was made against a different nxnative commit or fork, or the tree" \
+         "has edits that differ from the patch. Set nxnative_url/nxnative_ref to the base it" \
+         "was made for, or regenerate the patch against the tree you are building." >&2
     exit 1
   fi
 done

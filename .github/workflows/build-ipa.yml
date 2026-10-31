@@ -20,11 +20,11 @@ on:
         type: string
         default: main
       nxnative_url:
-        description: "nxnative repository the patches in patches/ were made against"
+        description: "nxnative repository the patches in patches/ were made against (the NXNATIVE-1.43.1 repository: nxnative with the 1.43:1 view and the controller work)"
         type: string
         default: "https://github.com/IMTHECOOLEST/NXNATIVE-1.43.1.git"
       apply_patches:
-        description: "Apply patches/*.patch (the controls and 1.43 work) to nxnative before building"
+        description: "Apply patches/*.patch (the Odyssey touch layout) to nxnative before building"
         type: boolean
         default: true
       aspect_scan:
@@ -36,9 +36,13 @@ on:
         type: string
         default: "1.43"
       runner:
-        description: "Runner label. macos-26 is the standard arm64 Mac; use a larger or self-hosted Mac if the disk is too small"
+        description: "Runner label. nxnative needs Xcode 27.1 (its shader tools are locked to that Metal compiler, and the app uses the iOS 27 SDK): xcode-27 is the image nxnative's own CI uses; macos-26 has an older Xcode. Use a larger or self-hosted Mac with Xcode 27.1 if the disk is too small"
         type: string
-        default: macos-26
+        default: xcode-27
+      allow_other_metal:
+        description: "Build even when the runner's Metal compiler is not the one nxnative locked. nxnative says such shaders can render wrong pictures (artifacts), so leave this off unless you accept that"
+        type: boolean
+        default: false
       app_name:
         description: "Home-screen app name (optional)"
         type: string
@@ -98,6 +102,7 @@ jobs:
           APPLY_PATCHES: ${{ inputs.apply_patches && '1' || '0' }}
           ASPECT_SCAN: ${{ inputs.aspect_scan && '1' || '0' }}
           ASPECT_RATIO: ${{ inputs.aspect_ratio }}
+          ALLOW_OTHER_METAL: ${{ inputs.allow_other_metal && '1' || '0' }}
           MODE: ${{ inputs.mode }}
           TITLE_ID: ${{ inputs.title_id }}
           APP_NAME: ${{ inputs.app_name }}

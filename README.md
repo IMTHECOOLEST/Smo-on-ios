@@ -6,7 +6,9 @@ Cloud build harness and DualSense layer for running **your own** Super Mario Ody
 
 - **nxnative now lists Super Mario Odyssey** as supported: base game (NSP or XCI) + update 1.4.1, IPA about 6 GB (22 October 2026, from its README; I could not open the profile folder itself, so the workflow's run summary confirms `profile 0100000000010000: found` at run time).
 - This repo does not contain the port. It is the cloud build harness around nxnative: it takes your files as one zip, builds on a Mac runner, and hands you the IPA. In `auto` mode it builds when nxnative has a profile for the game and runs a survey when it does not.
-- **Not yet verified:** nothing here has run on a real Mac runner or an iPhone. The Python, shell and C parts have unit tests; the Objective-C DualSense code is only checked by CI on first run, and it is not wired into nxnative.
+- **Needs the updated NXNATIVE-1.43.1.** The build clones `nxnative_url` (default `IMTHECOOLEST/NXNATIVE-1.43.1`), which must be nxnative's current `main` with the 1.43:1 view and the controller work on top (the update that came with this version of the harness); `patches/odyssey-touch-layout.patch` is made against exactly that tree and the run stops with a clear message if it does not apply.
+- **Needs Xcode 27.1.** nxnative's shader tools are locked to that Metal compiler and the app uses the iOS 27 SDK, so the `runner` input defaults to nxnative's own `xcode-27` image (see "Shader tool lock" below).
+- **Not yet verified:** nothing here has run on a real Mac runner or an iPhone. The Python, shell and C parts have unit tests; the Objective-C (the Odyssey layout patch, the DualSense module) is only checked by CI on first run.
 
 ## Use it
 
@@ -24,9 +26,11 @@ Full walkthrough: **[docs/TUTORIAL.md](docs/TUTORIAL.md)** (prepare the files, b
 4. **Actions, Build IPA, Run workflow.** Leave `mode` on `auto` and `release_parts` on.
 5. Download the IPA parts from the draft release, join them (`cat` and check the hash in the notes), and install.
 
-## Controls and 1.43:1 work (patches)
+## Controls, the 1.43:1 view and the Odyssey layout (patches)
 
-Put `controls-1_43.patch` (from the earlier chat) in `patches/`. The workflow applies every `patches/*.patch` to the nxnative checkout before building (`apply_patches` input, on by default). Set `nxnative_url` and `nxnative_ref` to the repo and commit the patch was made against; if it does not apply, the run stops and `diagnostics/patches.txt` says why.
+The 1.43:1 view, the scaled touch pad with its floating left stick, the Xbox face layout and the optional SDL3 backend are in the NXNATIVE-1.43.1 repository itself now (they used to be `controls-1_43.patch`). What is left to patch is Odyssey's own touch layout: `patches/odyssey-touch-layout.patch` adds the **OD** layout to `DmGamepad.m` (one ring on the left, big JUMP / CAP / CROUCH keys on the right, the camera turned by swiping; Odyssey's first layout, the others stay one tap away). The workflow applies every `patches/*.patch` to the nxnative checkout before building (`apply_patches` input, on by default). Set `nxnative_url` and `nxnative_ref` to the repo and commit the patch was made against; if it does not apply, the run stops and `diagnostics/patches.txt` says why.
+
+An earlier patch here (`odyssey-touch-cmdmem_3.patch`) also rewrote nxnative's host command-segment pool for Odyssey's Wooded Kingdom. nxnative now handles that itself (small segments for an empty pool, in `hle_nvn.c`), in a way that does not reclaim a segment a command list may still replay, so that part is dropped: a segment freed by age and overwritten while still in use would show up as garbage in the picture.
 
 After the build the workflow also:
 
@@ -49,7 +53,7 @@ A free standard runner may still be too small for Odyssey's disk needs; the run 
 - **Cost and quota:** private repos bill macOS minutes at a multiplier. The IPA is about 6 GB, which usually exceeds a personal plan's artifact storage, so the workflow also attaches it to a draft release in parts under 2 GiB (`release_parts`, on by default). The artifact upload is allowed to fail.
 - **Other Macs:** `scripts/cloud_build.sh` runs on any Mac (EC2 Mac, MacStadium). Set `INPUT_ZIP_PATH` instead of `INPUT_ZIP_URL`.
 - `nxnative_ref` defaults to `main`; pin a commit SHA for reproducible builds. The resolved commit is shown in the run summary.
-- **Shader tool lock:** nxnative pins the exact spirv-cross build and Metal compiler it was authored with (`dm/gfx/tools/dmsh_chain.lock`), and a runner never has those exact binaries, so its shader stage stops with `translation chain tools do not match the lock file`. Before the build, `scripts/pick_xcode.sh` selects an installed Xcode whose Metal compiler matches the lock, if there is one, and `scripts/sync_chain_lock.sh` re-baselines the lock and the game profile's `dmsh_chain.h` to the tools the runner has. The rewriting is done by nxnative's own `dmsh_chain.py` in the runner's checkout; no nxnative code is patched. The first line of `diagnostics/toolchain-lock.txt` (also in the run summary) says `match`, `re-baselined` or `failed`; a re-baselined build translates shaders with tools nxnative was not pinned to, so keep that in mind if the game renders wrongly.
+- **Shader tool lock:** nxnative pins its shader translator, its SPIRV-Cross (both in its checkout) and the Metal compiler of Xcode 27.1 in `dm/gfx/tools/dmsh_chain.lock`, and its build stops when they differ. Only the Metal compiler depends on the Mac. Before the build `scripts/pick_xcode.sh` selects an installed Xcode whose Metal compiler matches the lock, and `scripts/check_chain_lock.sh` only **checks** the lock (the report is `diagnostics/toolchain-lock.txt`; the run summary shows its first line). It no longer rewrites the lock to the runner's tools: that swapped the tools the shaders were tested with and is a likely source of artifacts in the picture, which nxnative itself warns about for another Metal compiler (its issue #242). On a Mac without the locked compiler the run stops; the `allow_other_metal` input builds with the compiler it has (nxnative's `--allow-other-metal`) and accepts that the picture can be wrong.
 
 ## What gets uploaded
 
@@ -57,7 +61,7 @@ Only small text files (survey, profile status, logs) and, when one is built, the
 
 ## DualSense
 
-See [dualsense/README.md](dualsense/README.md). Short version: rumble, gyro and light bar are implemented as a separate module but not wired into nxnative yet; each run produces a report showing where to wire it.
+See [dualsense/README.md](dualsense/README.md). Short version: nxnative now does a DualSense's gyro and Core Haptics rumble itself, so this separate module is superseded and stays only as a reference; each run still produces a report of where nxnative handles controllers.
 
 ## Tests
 

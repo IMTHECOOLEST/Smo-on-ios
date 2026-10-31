@@ -502,87 +502,58 @@ class PickXcode(unittest.TestCase):
             self.assertPicks(self.pick(), dev)
 
 
-STUB_CHAIN = r"""#!/usr/bin/env python3
-# Stand-in for nxnative's dm/gfx/tools/dmsh_chain.py: same CLI, fake tools.
-# FAKE_ACTUAL (file) is "what the runner has"; FAKE_CALLS (file) logs every call.
-import hashlib
+STUB_TOOL_LOCK = r"""#!/usr/bin/env python3
+# Stand-in for nxnative's dm/gfx/tools/tool_lock.py: same CLI for --check-tools, fake tools.
+# FAKE_ACTUAL (file) is "what the runner has" (tab-separated like the lock); FAKE_CALLS (file) logs every call.
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOCK = os.path.join(HERE, "dmsh_chain.lock")
-GAMES = os.path.join(HERE, "..", "..", "games")
 
 
-def _kv(path):
+def kv(path):
     d = {}
     with open(path) as f:
         for line in f:
-            if "=" in line:
-                k, v = line.rstrip("\n").split("=", 1)
+            if "\t" in line and not line.startswith("#"):
+                k, v = line.rstrip("\n").split("\t", 1)
                 d[k] = v
     return d
 
 
-def version():
-    with open(LOCK, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()[:16]
-
-
 def main(argv):
-    game = os.environ.get("DM_GAME")
-    if not game:
-        print("dmsh_chain: set DM_GAME to the base title ID")
-        return 2
-    if not os.path.isdir(os.path.join(GAMES, game)):
-        print("dmsh_chain: no profile " + game)
-        return 2
-    cmd = argv[0] if argv else ""
     with open(os.environ["FAKE_CALLS"], "a") as log:
-        log.write(cmd + " DM_GAME=" + game + "\n")
-    if cmd == "--check-tools":
-        actual, lock = _kv(os.environ["FAKE_ACTUAL"]), _kv(LOCK)
-        bad = [k for k in lock if lock[k] != actual.get(k)]
-        for k in bad:
-            print("[RED] translation chain tools do not match the lock file: %s: lock %s / actual %s"
-                  % (k, lock[k], actual.get(k)))
-        if not bad:
-            print("tools match the lock file")
-        return 1 if bad else 0
-    if cmd == "--update-lock":
-        if os.environ.get("FAKE_REFUSE"):
-            print("[RED] the translator was not built from source: refusing to write the lock")
-            return 1
-        if not os.environ.get("FAKE_NOOP_UPDATE"):
-            with open(os.environ["FAKE_ACTUAL"]) as src, open(LOCK, "w") as dst:
-                dst.write(src.read())
-        print("lock updated")
-        return 0
-    if cmd == "--header":
-        if os.environ.get("FAKE_FAIL_HEADER"):
-            print("[RED] cannot write the header")
-            return 1
-        with open(os.path.join(GAMES, game, "dmsh_chain.h"), "w") as f:
-            f.write('#define DMSH_CHAIN_VERSION "%s"\n' % version())
-        print("header written")
-        return 0
-    print("usage: dmsh_chain.py --check-tools | --update-lock | --header")
-    return 2
+        log.write(" ".join(argv) + " DM_GAME=" + os.environ.get("DM_GAME", "") + "\n")
+    if os.environ.get("FAKE_CRASH"):
+        raise RuntimeError("the checker fell over")
+    if argv != ["--check-tools"]:
+        sys.exit("usage: tool_lock.py --check-tools | --update-lock")
+    actual, lock = kv(os.environ["FAKE_ACTUAL"]), kv(LOCK)
+    bad = ["%s: lock %s / actual %s" % (k, lock[k], actual.get(k, "missing")) for k in lock if lock[k] != actual.get(k)]
+    for b in bad:
+        print("[RED] translation chain tools do not match the lock file: " + b)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 """
 
-LOCK_AUTHOR = (f"xlate_source=built-from-source\nspirv_cross=d9dc197f061b42a5\n"
-               f"metal_macosx={METAL_NEW}\nmetal_iphoneos={METAL_NEW}\n")
-LOCK_RUNNER = (f"xlate_source=built-from-source\nspirv_cross=242d2c694be3ec91\n"
-               f"metal_macosx={METAL_OLD}\nmetal_iphoneos={METAL_OLD}\n")
+# before the check moved out of dmsh_chain.py: the same CLI in dmsh_chain.py, which wants a profile to start
+STUB_OLD_CHAIN = STUB_TOOL_LOCK.replace(
+    'def main(argv):\n',
+    'def main(argv):\n    if not os.environ.get("DM_GAME"):\n        print("dmsh_chain: set DM_GAME to the base title ID")\n        return 2\n')
+
+LOCK_AUTHOR = ("dmsh_xlate.dll\tc23076f1647facaf\nspirv-cross\te37945d8e441d34d\n"
+               f"metal_macosx\t{METAL_NEW}\nmetal_iphoneos\t{METAL_NEW}\n")
+LOCK_RUNNER = ("dmsh_xlate.dll\tc23076f1647facaf\nspirv-cross\te37945d8e441d34d\n"
+               f"metal_macosx\t{METAL_OLD}\nmetal_iphoneos\t{METAL_OLD}\n")
 SMO = "0100000000010000"
 
 
-class SyncChainLock(unittest.TestCase):
-    """scripts/sync_chain_lock.sh against a fake nxnative tree and a stub dmsh_chain.py."""
+class CheckChainLock(unittest.TestCase):
+    """scripts/check_chain_lock.sh against a fake nxnative tree and a stub tool_lock.py. It must only check."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -596,163 +567,141 @@ class SyncChainLock(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def fresh(self):
-        """Start over with an empty scratch dir (for loops over several fake trees in one test)."""
-        self.tearDown()
-        self.setUp()
-
-    def tree(self, profiles=(SMO,), chain=True, lock=LOCK_AUTHOR, actual=LOCK_RUNNER, games=True):
-        """profiles: names (with a game.tsv) or (name, False) for a folder without game.tsv."""
+    def tree(self, checker="tool_lock.py", stub=STUB_TOOL_LOCK, lock=LOCK_AUTHOR, actual=LOCK_AUTHOR):
         self.tools.mkdir(parents=True)
-        if chain:
-            (self.tools / "dmsh_chain.py").write_text(STUB_CHAIN)
+        if checker:
+            (self.tools / checker).write_text(stub)
         if lock is not None:
             (self.tools / "dmsh_chain.lock").write_text(lock)
         self.actual.write_text(actual)
-        if games:
-            (self.nx / "dm" / "games").mkdir(parents=True)
-        for prof in profiles:
-            name, has_tsv = (prof, True) if isinstance(prof, str) else prof
-            d = self.nx / "dm" / "games" / name
-            d.mkdir(parents=True)
-            if has_tsv:
-                (d / "game.tsv").write_text("title\t" + name + "\n")
-            (d / "dmsh_chain.h").write_text('#define DMSH_CHAIN_VERSION "stale-%s"\n' % name)
+        (self.nx / "dm" / "games" / SMO).mkdir(parents=True)
+        (self.nx / "dm" / "games" / SMO / "game.tsv").write_text("title\tSMO\n")
+        (self.nx / "dm" / "games" / SMO / "keep.txt").write_text("untouched\n")
 
-    def sync(self, title=SMO, nx=None, **env):
+    def snapshot(self):
+        return {str(p.relative_to(self.nx)): p.read_bytes() for p in sorted(self.nx.rglob("*")) if p.is_file()}
+
+    def check(self, title=SMO, nx=None, **env):
         e = {**os.environ, "FAKE_ACTUAL": str(self.actual), "FAKE_CALLS": str(self.calls), **env}
-        return subprocess.run(["bash", str(ROOT / "scripts" / "sync_chain_lock.sh"), str(nx or self.nx), title,
-                               str(self.report)], env=e, capture_output=True, text=True)
+        args = ["bash", str(ROOT / "scripts" / "check_chain_lock.sh"), str(nx or self.nx), str(self.report)]
+        if title is not None:
+            args.append(title)
+        return subprocess.run(args, env=e, capture_output=True, text=True)
 
     def called(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
-    def flags(self):
-        return [c.split()[0] for c in self.called()]
+    def first_line(self):
+        return self.report.read_text().splitlines()[0]
 
-    def lock_text(self):
-        return (self.tools / "dmsh_chain.lock").read_text()
+    def run_checked(self, **kw):
+        """Run the check and assert it left the checkout exactly as it was"""
+        before = self.snapshot()
+        r = self.check(**kw)
+        self.assertEqual(self.snapshot(), before, "the checkout was changed")
+        return r
 
-    def header(self, name):
-        return (self.nx / "dm" / "games" / name / "dmsh_chain.h").read_text()
-
-    @staticmethod
-    def version_of(text):
-        return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-    def test_match_changes_nothing(self):
-        self.tree(lock=LOCK_RUNNER)
-        r = self.sync()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(self.report.read_text().startswith("match:"))
-        self.assertEqual(self.flags(), ["--check-tools"])
-        self.assertEqual(self.lock_text(), LOCK_RUNNER)
-        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
-
-    def test_mismatch_rewrites_lock_and_header_of_the_target_profile_only(self):
-        other = "010015100B514000"
-        self.tree(profiles=(other, SMO))
-        before_other = [(self.nx / "dm" / "games" / other / n).read_bytes() for n in ("game.tsv", "dmsh_chain.h")]
-        r = self.sync()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
-        self.assertTrue(all(c.endswith("DM_GAME=" + SMO) for c in self.called()))
-        self.assertEqual(self.lock_text(), LOCK_RUNNER)
-        new_version = self.version_of(LOCK_RUNNER)
-        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "%s"\n' % new_version)
-        after_other = [(self.nx / "dm" / "games" / other / n).read_bytes() for n in ("game.tsv", "dmsh_chain.h")]
-        self.assertEqual(before_other, after_other)
-        rep = self.report.read_text()
-        self.assertTrue(rep.startswith("re-baselined:"), rep)
-        self.assertIn("what differed:", rep)
-        self.assertIn("spirv_cross: lock d9dc197f061b42a5 / actual 242d2c694be3ec91", rep)
-        self.assertIn("lock before:\n" + LOCK_AUTHOR.rstrip("\n"), rep)
-        self.assertIn("lock after:\n" + LOCK_RUNNER.rstrip("\n"), rep)
-        self.assertIn("chain version: " + new_version, rep)
-
-    def test_title_id_matches_case_insensitively(self):
-        folder = "0100ABCDEF000000"
-        self.tree(profiles=("0100000000010000", folder))   # the first profile sorts before the match
-        r = self.sync(title="0100abcdef000000")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
-        self.assertTrue(all(c.endswith("DM_GAME=" + folder) for c in self.called()), self.called())
-        self.assertEqual(self.header(folder), '#define DMSH_CHAIN_VERSION "%s"\n' % self.version_of(LOCK_RUNNER))
-        self.assertEqual(self.header("0100000000010000"), '#define DMSH_CHAIN_VERSION "stale-0100000000010000"\n')
-
-    def test_no_matching_profile_rewrites_the_lock_but_writes_no_header(self):
-        other = "010015100B514000"
-        self.tree(profiles=(other,))
-        r = self.sync()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--check-tools"])
-        self.assertTrue(all(c.endswith("DM_GAME=" + other) for c in self.called()))
-        self.assertEqual(self.lock_text(), LOCK_RUNNER)
-        self.assertEqual(self.header(other), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % other)
-        rep = self.report.read_text()
-        self.assertTrue(rep.startswith("re-baselined:"), rep)
-        self.assertIn("no header", rep.splitlines()[0])
-
-    def test_translator_refusal_fails_loudly_and_leaves_the_lock_alone(self):
+    def test_match_exits_0_and_changes_nothing(self):
         self.tree()
-        r = self.sync(FAKE_REFUSE="1")
-        self.assertEqual(r.returncode, 1)
-        rep = self.report.read_text()
-        self.assertTrue(rep.startswith("failed:"), rep)
-        self.assertIn("not built from source", rep)
-        self.assertIn("not built from source", r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock"])
-        self.assertEqual(self.lock_text(), LOCK_AUTHOR)
-        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
-
-    def test_still_mismatching_after_update_fails(self):
-        self.tree()
-        r = self.sync(FAKE_NOOP_UPDATE="1")
-        self.assertEqual(r.returncode, 1)
-        rep = self.report.read_text()
-        self.assertTrue(rep.startswith("failed:"), rep)
-        self.assertIn("still do not match", rep.splitlines()[0])
-        self.assertIn("still do not match", r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--header", "--check-tools"])
-
-    def test_header_failure_fails(self):
-        self.tree()
-        r = self.sync(FAKE_FAIL_HEADER="1")
-        self.assertEqual(r.returncode, 1)
-        self.assertTrue(self.report.read_text().startswith("failed:"))
-        self.assertIn("cannot write the header", r.stderr)
-
-    def test_no_lock_mechanism_is_skipped(self):
-        for kw in ({"chain": False}, {"lock": None}, {"chain": False, "lock": None}):
-            with self.subTest(**kw):
-                self.fresh()
-                self.tree(**kw)
-                r = self.sync()
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertTrue(self.report.read_text().startswith("skipped:"))
-                self.assertEqual(self.called(), [])
-        self.fresh()
-        r = self.sync(nx=self.dir / "no-such-checkout")
+        r = self.run_checked()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(self.report.read_text().startswith("skipped:"))
+        self.assertTrue(self.first_line().startswith("match:"))
+        self.assertEqual([c.split()[0] for c in self.called()], ["--check-tools"])
 
-    def test_no_profiles_is_skipped(self):
-        for kw in ({"profiles": ()}, {"profiles": (("0100000000010000", False),)}, {"profiles": (), "games": False}):
-            with self.subTest(**kw):
-                self.fresh()
-                self.tree(**kw)
-                r = self.sync()
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertTrue(self.report.read_text().startswith("skipped:"))
-                self.assertEqual(self.called(), [])
-                self.assertEqual(self.lock_text(), LOCK_AUTHOR)
+    def test_only_the_metal_compiler_differing_exits_3_and_leaves_the_lock_alone(self):
+        self.tree(actual=LOCK_RUNNER)
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertTrue(self.first_line().startswith("metal-only:"))
+        text = self.report.read_text()
+        self.assertIn("metal_macosx: lock", text)
+        self.assertEqual((self.tools / "dmsh_chain.lock").read_text(), LOCK_AUTHOR)
+        # the checker is called once, with --check-tools only: no --update-lock, no --header
+        self.assertEqual([c.split()[0] for c in self.called()], ["--check-tools"])
 
-    def test_a_profile_without_game_tsv_is_not_used(self):
-        self.tree(profiles=((SMO, False), "010015100B514000"))   # same ID but no game.tsv
-        r = self.sync()
+    def test_one_metal_sdk_differing_is_still_metal_only(self):
+        self.tree(actual=LOCK_AUTHOR.replace(f"metal_iphoneos\t{METAL_NEW}", f"metal_iphoneos\t{METAL_OLD}"))
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
+    def test_another_spirv_cross_fails(self):
+        self.tree(actual=LOCK_AUTHOR.replace("e37945d8e441d34d", "242d2c694be3ec91"))
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.first_line().startswith("failed:"))
+        self.assertIn("spirv-cross", r.stderr)
+
+    def test_another_translator_fails(self):
+        self.tree(actual=LOCK_AUTHOR.replace("c23076f1647facaf", "0000000000000000"))
+        self.assertEqual(self.run_checked().returncode, 1)
+
+    def test_metal_plus_another_tool_is_not_metal_only(self):
+        self.tree(actual=LOCK_RUNNER.replace("e37945d8e441d34d", "242d2c694be3ec91"))
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.first_line().startswith("failed:"))
+
+    def test_a_metal_compiler_that_does_not_run_fails(self):
+        gone = LOCK_AUTHOR.replace(f"metal_iphoneos\t{METAL_NEW}\n", "")   # the stub reports a tool the runner lacks as "missing"
+        self.tree(actual=gone)
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("actual missing", self.report.read_text())
+
+    def test_a_checker_that_crashes_fails_loudly(self):
+        self.tree()
+        r = self.run_checked(FAKE_CRASH="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.first_line().startswith("failed:"))
+        self.assertIn("fell over", self.report.read_text())
+
+    def test_no_lock_is_skipped(self):
+        self.tree(lock=None)
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(self.first_line().startswith("skipped:"))
+        self.assertEqual(self.called(), [])
+
+    def test_no_checker_is_skipped(self):
+        self.tree(checker=None)
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(self.first_line().startswith("skipped:"))
+
+    def test_a_dmsh_chain_without_the_check_is_skipped(self):
+        self.tree(checker="dmsh_chain.py", stub="print('no lock check here')\n")
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(self.first_line().startswith("skipped:"))
+
+    def test_older_nxnative_with_the_check_in_dmsh_chain_uses_it_with_the_profile(self):
+        self.tree(checker="dmsh_chain.py", stub=STUB_OLD_CHAIN, actual=LOCK_RUNNER)
+        r = self.run_checked()
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertEqual(self.called(), [f"--check-tools DM_GAME={SMO}"])
+
+    def test_missing_checkout_is_skipped(self):
+        r = self.check(nx=self.dir / "nowhere")
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(self.first_line().startswith("skipped:"))
+
+    def test_tool_lock_is_preferred_over_dmsh_chain(self):
+        self.tree()
+        (self.tools / "dmsh_chain.py").write_text("raise SystemExit('must not run')\n")
+        r = self.run_checked()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.flags(), ["--check-tools", "--update-lock", "--check-tools"])  # no header
-        self.assertEqual(self.header(SMO), '#define DMSH_CHAIN_VERSION "stale-%s"\n' % SMO)
+
+    def test_title_id_is_optional(self):
+        self.tree()
+        r = self.run_checked(title=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_script_has_no_way_to_write_the_lock(self):
+        text = (ROOT / "scripts" / "check_chain_lock.sh").read_text()
+        code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("--update-lock", code)
+        self.assertNotIn("--header", code)
+        self.assertNotIn("sed -i", code)
 
 
 class CloudBuildToolLock(unittest.TestCase):
@@ -763,23 +712,77 @@ class CloudBuildToolLock(unittest.TestCase):
         self.assertNotIn("FORCE TOOLCHAIN VERSION OVERRIDE", self.text)
         self.assertNotIn("Bypassing lock validation", self.text)
 
+    def test_the_lock_is_only_checked_never_rewritten(self):
+        self.assertFalse((ROOT / "scripts" / "sync_chain_lock.sh").exists())
+        self.assertNotIn("sync_chain_lock", self.text)
+        self.assertNotIn("--update-lock", self.text)
+
     def test_calls_both_scripts_with_bash_in_build_mode_before_nxnative_runs(self):
         pick = re.search(r'xcode_dev="\$\(bash "\$REPO_ROOT/scripts/pick_xcode\.sh" "\$NX_DIR/dm/gfx/tools/dmsh_chain\.lock"\)"',
                          self.text)
-        sync = re.search(r'^\s*bash "\$REPO_ROOT/scripts/sync_chain_lock\.sh" "\$NX_DIR" "\$TITLE_ID" '
-                         r'"\$OUT_DIR/diagnostics/toolchain-lock\.txt"$', self.text, re.M)
+        check = re.search(r'^\s*bash "\$REPO_ROOT/scripts/check_chain_lock\.sh" "\$NX_DIR" '
+                          r'"\$OUT_DIR/diagnostics/toolchain-lock\.txt" "\$TITLE_ID" \|\| lock_rc=\$\?$', self.text, re.M)
         self.assertTrue(pick, "pick_xcode.sh is not called with bash")
-        self.assertTrue(sync, "sync_chain_lock.sh is not called with bash")
+        self.assertTrue(check, "check_chain_lock.sh is not called with bash")
         self.assertIn('export DEVELOPER_DIR="$xcode_dev"', self.text)
         run_nxnative = self.text.index("build_ipa_from_nsp.py")
-        self.assertLess(pick.start(), sync.start())
-        self.assertLess(sync.start(), run_nxnative)
+        self.assertLess(pick.start(), check.start())
+        self.assertLess(check.start(), run_nxnative)
         # only when MODE=build: the closest `if` above the call is the MODE check
         self.assertTrue(self.text[:pick.start()].rsplit("\nif ", 1)[1].startswith('[[ "$MODE" == "build" ]]'))
 
+    def test_another_metal_compiler_stops_the_build_unless_it_was_allowed(self):
+        i = self.text.index("lock_rc -eq 3")
+        block = self.text[i:self.text.index("# 5. Run nxnative")]
+        self.assertIn('"$ALLOW_OTHER_METAL" == "1"', block)
+        self.assertIn("exit 1", block)
+        self.assertIn('ALLOW_OTHER_METAL="${ALLOW_OTHER_METAL:-0}"', self.text)   # off by default
+        # the flag reaches nxnative only through the variable the allowed branch sets
+        self.assertEqual(self.text.count("args+=(--allow-other-metal)"), 1)
+        self.assertRegex(self.text, r'\[\[ "\$allow_other_metal_arg" == "1" \]\] && args\+=\(--allow-other-metal\)')
+        self.assertLess(self.text.index("allow_other_metal_arg=1"), self.text.index("args+=(--allow-other-metal)"))
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_any_other_mismatch_stops_the_build(self):
+        self.assertRegex(self.text, r'elif \[\[ \$lock_rc -ne 0 \]\]; then\n\s+exit "\$lock_rc"')
+
+    def test_prerequisites_are_the_ones_nxnative_lists(self):
+        brew = [l for l in self.text.splitlines() if l.startswith("brew install xcodegen")]
+        self.assertEqual(len(brew), 1)
+        self.assertIn("glslang", brew[0])
+        self.assertNotIn("spirv-cross", brew[0])   # nxnative's own, pinned by its lock
+        pip = [l for l in self.text.splitlines() if "pip install" in l]
+        self.assertEqual(len(pip), 1)
+        for pkg in ("lz4", "capstone", "fonttools", "nsz", "zbic", "backports.zstd"):
+            self.assertIn(pkg, pip[0])
+
+
+class OdysseyPatch(unittest.TestCase):
+    """The patches folder holds a layout patch for the updated NXNATIVE-1.43.1 and nothing that rewrites memory management."""
+
+    def patches(self):
+        return sorted((ROOT / "patches").glob("*.patch"))
+
+    def test_the_folder_has_exactly_the_layout_patch(self):
+        self.assertEqual([p.name for p in self.patches()], ["odyssey-touch-layout.patch"])
+
+    def test_it_parses_and_touches_only_the_gamepad(self):
+        for p in self.patches():
+            r = subprocess.run(["git", "apply", "--numstat", str(p)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            files = [line.split("\t")[2] for line in r.stdout.splitlines()]
+            self.assertEqual(files, ["dm/ios/Sources/DmGamepad.m"])
+
+    def test_it_does_not_touch_the_command_segment_pool(self):
+        text = (ROOT / "patches" / "odyssey-touch-layout.patch").read_text()
+        for word in ("hostseg", "HOSTSEG", "nvn_mtl", "hle_nvn"):
+            self.assertNotIn(word, text)
+
+    def test_the_layout_cycle_and_the_saved_modes_agree_with_nxnative(self):
+        text = (ROOT / "patches" / "odyssey-touch-layout.patch").read_text()
+        # 0 = 2D, 1 = 3D, 2 = Tap (nxnative's numbers), 3 = OD; the saved key is nxnative's own, so a saved choice keeps its meaning
+        self.assertIn("0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers), 3 = OD", text)
+        self.assertNotIn("DmPadLayoutMode", text)
+        self.assertIn("int l = _od ? 0 : _tap ? 3 : _full ? (dm_opmode() == 0 ? 2 : 3) : 1;", text)
 
 
 class ApplyPatches(unittest.TestCase):
@@ -815,7 +818,7 @@ class ApplyPatches(unittest.TestCase):
         r = self.run_script()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.nx / "a.txt").read_text(), "two\n")
-        self.assertIn("applied: a.patch", self.report.read_text())
+        self.assertIn("applied (-p1): a.patch", self.report.read_text())   # the script says how many path components it stripped
         r = self.run_script()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("already applied", self.report.read_text())

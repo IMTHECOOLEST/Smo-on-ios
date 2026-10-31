@@ -40,7 +40,7 @@ This is nxnative's own documented flow. You need a Mac with [Xcode](https://apps
 
 ```
 git clone https://github.com/seedds/nxnative.git && cd nxnative
-brew install xcodegen zstd spirv-cross
+brew install xcodegen zstd glslang
 brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools
 ```
@@ -93,10 +93,11 @@ That link is valid for 24 hours. Delete the object when the build is done. (GitH
 - `mode`: leave on `auto`. It builds if nxnative has a profile for the game and runs a survey if not.
 - `title_id`: `0100000000010000` (Odyssey) is the default.
 - `nxnative_ref`: `main`, or a full commit SHA to pin a version. The run summary shows which commit was used.
-- `apply_patches`: leave on to apply `patches/*.patch` (put `controls-1_43.patch` there first). `nxnative_url` must be the repo the patch was made against.
+- `apply_patches`: leave on to apply `patches/*.patch` (the Odyssey touch layout). `nxnative_url` must be the updated NXNATIVE-1.43.1 repo the patch was made against.
 - `aspect_scan` / `aspect_ratio`: after the build, scan the main NSO for 16:9 sites (default ratio `1.43`); read `diagnostics/aspect-scan.txt`.
 - `allow_public`: turn on to run in a public repo (free macOS minutes); see "No billing set up?" in the README. The result is then in draft releases `IPA parts` and `Diagnostics`, not in artifacts.
-- `runner`: `macos-26` by default. If the run stops with a disk-space message, use a larger or self-hosted Mac.
+- `runner`: `xcode-27` by default, nxnative's own image with Xcode 27.1 (the Metal compiler its shader tools are locked to). If the run stops with a disk-space message, use a larger or self-hosted Mac that has Xcode 27.1.
+- `allow_other_metal`: off. Turn it on only if you must build on a Mac without Xcode 27.1's Metal compiler; nxnative says such shaders can render wrong pictures.
 - `release_parts`: leave on. See B6.
 
 **B6. Get the IPA.** An IPA of about 6 GB usually exceeds the artifact storage quota of personal GitHub plans, so the workflow also publishes it as **parts of at most 1900 MiB on a draft release**:
@@ -129,7 +130,7 @@ nxnative's README advises signing with the **Increased Memory Limit** capability
 ## 4. Play
 
 - Tap **2D** or **3D** at the top for the touch layout.
-- A connected controller hides the touch controls and keeps every button. The DualSense extras in this repo (rumble, gyro, light bar) are not wired in yet; see `dualsense/README.md`.
+- A connected controller hides the touch controls and keeps every button; its face keys use the Xbox layout (`DM_PAD_FACE=nintendo` for the Nintendo positions). A DualSense's gyro and rumble come from nxnative itself; the extras in `dualsense/` are superseded, see `dualsense/README.md`.
 - Saves and logs are in the Files app under the app's name: `save/` and `log.txt`. If something goes wrong, `log.txt` (and `log.prev.txt`) is what to look at.
 - Settings without rebuilding go in `Documents/env.txt`, one `KEY=VALUE` per line.
 
@@ -146,7 +147,7 @@ nxnative's README advises signing with the **Increased Memory Limit** capability
 | `ipa` artifact upload failed | Quota. Use the draft release parts (B6). |
 | No draft release | `release_parts` was off, or no IPA was produced. Check `diagnostics/nxnative-build.log`. |
 | Build fails inside nxnative | Open `diagnostics/nxnative-build.log`. Check nxnative's issues page before filing anything, and never post keys. |
-| Run summary says `shader tool lock, failed: ...`, or the shader stage said `translation chain tools do not match the lock file` | The runner's spirv-cross and Metal compiler differ from the ones pinned in nxnative's `dmsh_chain.lock`. The build now picks an installed Xcode with the locked Metal compiler if there is one, and otherwise re-baselines the lock and the profile's header to the runner's tools (`re-baselined:`). `failed:` means that was not possible, for example because nxnative's translator was not built from source; read `diagnostics/toolchain-lock.txt` and check nxnative's issues page. |
+| Run summary says `shader tool lock, failed: ...` or `metal-only: ...`, or the shader stage said `translation chain tools do not match the lock file` | `failed`: the translator or SPIRV-Cross differs from the locked one (they are in nxnative's checkout, so the checkout was edited), or the Metal compiler does not run: install Xcode 27.1's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`). `metal-only`: the Mac's Metal compiler is not the locked one: use a runner with Xcode 27.1 (the `runner` input), or turn `allow_other_metal` on and accept that artifacts in the picture become likely. The lock is never rewritten. |
 
 ## Checking support for another game
 

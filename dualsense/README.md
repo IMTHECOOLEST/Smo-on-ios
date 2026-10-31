@@ -2,6 +2,8 @@
 
 Status: **written, not yet wired in, and the Objective-C file has not been compiled by its author.** The `objc-syntax` CI job compiles it against the iOS SDK; treat a green run as the first real check.
 
+**Superseded.** nxnative now takes a DualSense's gyro through GameController (`motion_apple.h`) and plays the game's HD rumble on its two handles through Core Haptics (`haptics_apple.h`), with a player slot for each controller (`pad_slots.h`), so the hooks described below would double what the host already does. Do not wire this module into a current nxnative; it is kept as a reference, and `scripts/inspect_nxnative_input.sh` still reports where nxnative handles controllers.
+
 ## What is here
 
 | File | What it does | Verified how |

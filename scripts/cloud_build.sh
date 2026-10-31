@@ -12,6 +12,8 @@
 #   TITLE_ID           base title ID to require (default: 0100000000010000)
 #   APP_NAME           optional home-screen name
 #   APPLY_PATCHES      1 (default) applies patches/*.patch to the nxnative checkout; 0 skips
+#   ALLOW_OTHER_METAL  0 (default) stops when the Mac has not the Metal compiler nxnative locked (Xcode 27.1); 1 builds with the one it has
+#                      (nxnative's --allow-other-metal: such shaders can render wrong pictures, GitHub issue #242 of nxnative)
 #   ASPECT_SCAN        1 (default) runs dm/tools/aspect_scan.py on the extracted main NSO
 #   ASPECT_RATIO       ratio for the scan (default: 1.43)
 #   WORK_DIR           scratch dir (default: ./work)
@@ -33,6 +35,7 @@ OUT_DIR="${OUT_DIR:-$PWD/out}"
 KEEP_WORK="${KEEP_WORK:-0}"
 APPLY_PATCHES="${APPLY_PATCHES:-1}"
 ASPECT_SCAN="${ASPECT_SCAN:-1}"
+ALLOW_OTHER_METAL="${ALLOW_OTHER_METAL:-0}"
 ASPECT_RATIO="${ASPECT_RATIO:-1.43}"
 
 case "$MODE" in auto|survey|build) ;; *) echo "error: MODE must be auto, survey or build" >&2; exit 2 ;; esac
@@ -98,14 +101,14 @@ python3 "$REPO_ROOT/scripts/diskcheck.py" "$WORK_DIR" "$NSP_BYTES"
 # 3. Tools --------------------------------------------------------------------
 step "Installing build tools"
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ENV_HINTS=1
-brew install xcodegen zstd spirv-cross
+brew install xcodegen zstd glslang   # SPIRV-Cross and the shader translator are nxnative's own (dm/gfx/tools), pinned by its lock: not Homebrew's
 brew install --cask dotnet-sdk || {
   command -v dotnet >/dev/null 2>&1 || { echo "error: dotnet SDK unavailable" >&2; exit 1; }
   echo "note: cask install failed; using the dotnet already on this machine"
 }
 python3 -m venv "$WORK_DIR/venv"
 export PATH="$WORK_DIR/venv/bin:$PATH"
-python -m pip install --quiet lz4 capstone fonttools
+python -m pip install --quiet lz4 capstone fonttools nsz zbic "backports.zstd; python_version < '3.14'"   # as nxnative's README lists them
 
 # 4. nxnative -----------------------------------------------------------------
 step "Fetching nxnative ($NXNATIVE_REF)"
@@ -140,19 +143,38 @@ fi
 bash "$REPO_ROOT/scripts/inspect_nxnative_input.sh" "$NX_DIR" \
   > "$OUT_DIR/diagnostics/dualsense-integration-report.md" || true
 
-# nxnative pins the exact spirv-cross and Metal compiler it was authored with
-# (dm/gfx/tools/dmsh_chain.lock); a runner never has those binaries. Use an installed
-# Xcode that has the locked Metal compiler if there is one, then re-baseline the lock
-# and the profile's header to whatever tools this machine has. A failure here stops
-# the build (it is not absorbed); the report is diagnostics/toolchain-lock.txt.
+# nxnative pins its shader translator, its SPIRV-Cross (both are in its checkout) and the Metal compiler of Xcode 27.1 in
+# dm/gfx/tools/dmsh_chain.lock, and its build stops when they differ. Only the Metal compiler depends on the Mac: use an installed Xcode
+# that has the locked one if there is one. The lock is then only CHECKED (scripts/check_chain_lock.sh), never rewritten: an earlier version
+# of this script re-baselined the lock to whatever tools the runner had, which swaps the tools the shaders were tested with.
+# Another Metal compiler stops the build unless ALLOW_OTHER_METAL=1 (nxnative's own --allow-other-metal; untested compilers can corrupt
+# the picture). The report is diagnostics/toolchain-lock.txt.
+allow_other_metal_arg=0
 if [[ "$MODE" == "build" ]]; then
-  step "Aligning the shader tools with nxnative's lock"
+  step "Checking the shader tools against nxnative's lock"
   xcode_dev="$(bash "$REPO_ROOT/scripts/pick_xcode.sh" "$NX_DIR/dm/gfx/tools/dmsh_chain.lock")"
   if [[ -n "$xcode_dev" ]]; then
     export DEVELOPER_DIR="$xcode_dev"
     echo "using Xcode at $xcode_dev (its Metal compiler matches nxnative's lock)"
   fi
-  bash "$REPO_ROOT/scripts/sync_chain_lock.sh" "$NX_DIR" "$TITLE_ID" "$OUT_DIR/diagnostics/toolchain-lock.txt"
+  if ! xcrun -sdk iphoneos metal --version >/dev/null 2>&1; then
+    echo "the Metal toolchain component is not installed; downloading it"
+    xcodebuild -downloadComponent MetalToolchain || echo "note: the Metal toolchain download failed"
+  fi
+  lock_rc=0
+  bash "$REPO_ROOT/scripts/check_chain_lock.sh" "$NX_DIR" "$OUT_DIR/diagnostics/toolchain-lock.txt" "$TITLE_ID" || lock_rc=$?
+  if [[ $lock_rc -eq 3 ]]; then
+    if [[ "$ALLOW_OTHER_METAL" == "1" ]]; then
+      echo "warning: building with a Metal compiler that is not nxnative's locked one (ALLOW_OTHER_METAL=1); the shaders can render wrong pictures" >&2
+      allow_other_metal_arg=1
+    else
+      echo "error: this Mac's Metal compiler is not the one nxnative's shaders were tested with (see diagnostics/toolchain-lock.txt)." \
+           "Use a runner with Xcode 27.1 (the runner input), or set allow_other_metal to build anyway (artifacts in the picture are then likely)." >&2
+      exit 1
+    fi
+  elif [[ $lock_rc -ne 0 ]]; then
+    exit "$lock_rc"
+  fi
 fi
 
 # 5. Run nxnative -------------------------------------------------------------
@@ -160,6 +182,7 @@ step "Running nxnative ($MODE)"
 args=("$IN_DIR/nsp" -k "$IN_DIR/prod.keys")
 [[ "$MODE" == "survey" ]] && args+=(--survey-only)
 [[ -n "${APP_NAME:-}" ]] && args+=(--app-name "$APP_NAME")
+[[ "$allow_other_metal_arg" == "1" ]] && args+=(--allow-other-metal)
 
 set +e
 ( cd "$NX_DIR" && python scripts/build_ipa_from_nsp.py "${args[@]}" ) 2>&1 | tee "$OUT_DIR/diagnostics/nxnative-build.log"

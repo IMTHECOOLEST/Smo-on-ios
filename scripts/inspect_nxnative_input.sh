@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Report where nxnative handles controllers, HID vibration and six-axis, so the
-# DualSense module can be wired in from evidence instead of guesses.
+# Report where nxnative handles controllers, HID vibration and six-axis (current nxnative
+# does a DualSense's gyro and rumble itself: see the last section).
 #   scripts/inspect_nxnative_input.sh /path/to/nxnative > report.md
 set -euo pipefail
 NX="${1:?usage: inspect_nxnative_input.sh <nxnative checkout>}"
@@ -19,3 +19,4 @@ section "HID vibration (Horizon hid service)"     'SendVibration|VibrationValue|
 section "HID six-axis sensor"                     'SixAxis|six_axis|sixaxis'
 section "Npad state writes (button mask, sticks)" 'NpadState|npad|Npad'
 section "Existing haptics usage"                  'CoreHaptics|CHHaptic'
+section "Built-in controller slots, motion and rumble" 'pad_slots|dm_motion_attach|dm_haptics_apple|GCDeviceHaptics|GCDualSense'

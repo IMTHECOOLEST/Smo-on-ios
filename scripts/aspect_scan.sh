@@ -14,7 +14,7 @@ mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
 tool="$NX/dm/tools/aspect_scan.py"
 if [[ ! -f "$tool" ]]; then
-  echo "skipped: $tool not found (the controls patch is not applied)" | tee -a "$REPORT"
+  echo "skipped: $tool not found (this nxnative commit is not the updated NXNATIVE-1.43.1)" | tee -a "$REPORT"
   exit 0
 fi
 if [[ ! "$RATIO" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
